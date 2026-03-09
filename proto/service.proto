@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+// Пространство имен (в C++ превратится в namespace db)
+package db;
+
+// Наш основной сервис СУБД
+service Database {
+    // Метод для записи значения по ключу
+    rpc Set (SetRequest) returns (SetResponse);
+    
+    // Метод для чтения значения по ключу
+    rpc Get (GetRequest) returns (GetResponse);
+}
+
+// --- Сообщения для Set ---
+message SetRequest {
+    string key = 1;
+    string value = 2;
+}
+
+message SetResponse {
+    bool success = 1;
+    string error_message = 2; // Опционально, если success = false
+}
+
+// --- Сообщения для Get ---
+message GetRequest {
+    string key = 1;
+}
+
+message GetResponse {
+    bool found = 1;
+    string value = 2; // Пусто, если found = false
+}

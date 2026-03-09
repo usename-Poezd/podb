@@ -1,0 +1,21 @@
+# Build
+build/
+
+# compile_commands.json (симлинк, генерируется make configure)
+compile_commands.json
+
+# Сгенерированные protobuf/gRPC файлы
+src/**/*.pb.cc
+src/**/*.pb.h
+src/**/*.grpc.pb.cc
+src/**/*.grpc.pb.h
+
+# Clangd индекс
+.cache/
+.clangd/
+
+# Редактор
+*.swp
+*.swo
+*~
+.DS_Store

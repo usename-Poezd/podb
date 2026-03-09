@@ -1,0 +1,29 @@
+CompileFlags:
+  CompilationDatabase: build/
+  Add:
+    - -DAGRPC_BOOST_ASIO
+    - -DBOOST_CONTAINER_NO_LIB
+    - -DBOOST_CONTAINER_STATIC_LINK
+    - -DBOOST_PROGRAM_OPTIONS_NO_LIB
+    - -DBOOST_PROGRAM_OPTIONS_STATIC_LINK
+    - -I/home/poezd/work/podb/src/handlers
+    - -I/home/poezd/work/podb/src/router
+    - -I/home/poezd/work/podb/src/core
+    - -I/home/poezd/work/podb/src/storage
+    - -I/home/poezd/work/podb/src/api
+    - -isystem
+    - /home/poezd/work/podb/build/vcpkg_installed/x64-linux/include
+    - -isystem
+    - /home/poezd/work/podb/build/vcpkg_installed/x64-linux/include/concurrentqueue
+
+Diagnostics:
+  UnusedIncludes: Strict
+  MissingIncludes: Strict
+
+Index:
+  Background: Build
+
+InlayHints:
+  Enabled: Yes
+  ParameterNames: Yes
+  DeducedTypes: Yes

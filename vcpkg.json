@@ -1,0 +1,13 @@
+{
+  "name": "db-engine",
+  "version": "0.1.0",
+  "dependencies": [
+    "boost-asio",
+    "boost-program-options",
+    "grpc",
+    "protobuf",
+    "asio-grpc",
+    "concurrentqueue",
+    "jemalloc"
+  ]
+}
