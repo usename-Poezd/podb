@@ -6,6 +6,7 @@
 #include <boost/asio.hpp>
 #include <boost/program_options.hpp>
 
+#include "execution/kv_executor.h"
 #include "handlers/grpc_handler.h"
 #include "router/router.h"
 #include "storage/storage_engine.h"
@@ -60,11 +61,27 @@ int main(int argc, char *argv[]) {
       worker_ptrs.push_back(w.get());
     }
 
+    std::vector<std::unique_ptr<KvExecutor>> executors;
+    executors.reserve(cores);
+    for (int i = 0; i < cores; ++i) {
+      executors.push_back(std::make_unique<KvExecutor>(*storages[i], i));
+    }
+
     std::vector<std::unique_ptr<Router>> routers(cores);
     std::vector<std::unique_ptr<GrpcHandler>> handlers(cores);
     std::vector<std::unique_ptr<CoreDispatcher>> dispatchers(cores);
 
-    routers[0] = std::make_unique<Router>(0, worker_ptrs, *storages[0]);
+    for (int i = 0; i < cores; ++i) {
+      routers[i] = std::make_unique<Router>(i, worker_ptrs,
+          [ex = executors[i].get(), wptr = worker_ptrs](Task task) mutable {
+            Task resp = ex->Execute(std::move(task));
+            int rtc = resp.reply_to_core;
+            if (rtc >= 0 && rtc < static_cast<int>(wptr.size())) {
+              wptr[rtc]->PushTask(std::move(resp));
+            }
+          });
+    }
+
     handlers[0] = std::make_unique<GrpcHandler>(0, *routers[0]);
     dispatchers[0] = std::make_unique<CoreDispatcher>(*routers[0], *handlers[0]);
 
@@ -77,7 +94,6 @@ int main(int argc, char *argv[]) {
     });
 
     for (int i = 1; i < cores; ++i) {
-      routers[i] = std::make_unique<Router>(i, worker_ptrs, *storages[i]);
       workers[i]->SetTaskProcessor([&router = *routers[i]](Task task) {
         router.RouteTask(std::move(task));
       });
@@ -85,6 +101,12 @@ int main(int argc, char *argv[]) {
 
     for (int i = 1; i < cores; ++i) {
       workers[i]->Start();
+    }
+
+    for (int i = 1; i < cores; ++i) {
+      while (!workers[i]->IsReady()) {
+        std::this_thread::yield();
+      }
     }
 
     boost::asio::signal_set signals(workers[0]->GetIoContext(), SIGINT, SIGTERM);

@@ -135,6 +135,7 @@ void Worker::StartEventFdRead() {
 void Worker::RunLoop() {
   SetCpuAffinity();
   InitEventFd();
+  ready_.store(true, std::memory_order_release);
   StartEventFdRead();
 
   if (mode_ == WorkerMode::Ingress) {

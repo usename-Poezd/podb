@@ -57,6 +57,8 @@ public:
   void Join();
   void RunLoop();
 
+  bool IsReady() const { return ready_.load(std::memory_order_acquire); }
+
 private:
   void SetCpuAffinity();
   void InitEventFd();
@@ -67,6 +69,7 @@ private:
   WorkerMode mode_;
   int port_;
   std::atomic<bool> running_{false};
+  std::atomic<bool> ready_{false};
   std::thread thread_;
 
   boost::asio::io_context io_context_;

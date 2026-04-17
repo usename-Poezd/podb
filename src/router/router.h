@@ -1,11 +1,10 @@
 #pragma once
 
+#include <functional>
 #include <string>
 #include <vector>
 
 #include "core/task.h"
-#include "execution/kv_executor.h"
-#include "storage/storage_engine.h"
 
 namespace db {
 
@@ -13,20 +12,18 @@ class Worker;
 
 class Router {
 public:
-  Router(int local_core_id, std::vector<Worker *> all_workers, StorageEngine &local_storage);
+  Router(int local_core_id, std::vector<Worker *> all_workers,
+         std::function<void(Task)> local_execute);
 
   [[nodiscard]] int RouteKey(const std::string &key) const noexcept;
 
   void RouteTask(Task task);
 
 private:
-  void HandleLocally(Task task);
-
   int local_core_id_;
   int num_cores_;
   std::vector<Worker *> all_workers_;
-  StorageEngine &local_storage_;
-  KvExecutor executor_;
+  std::function<void(Task)> local_execute_;
 };
 
 } // namespace db
