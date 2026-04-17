@@ -68,9 +68,6 @@ int main(int argc, char *argv[]) {
     }
 
     std::vector<std::unique_ptr<Router>> routers(cores);
-    std::vector<std::unique_ptr<GrpcHandler>> handlers(cores);
-    std::vector<std::unique_ptr<CoreDispatcher>> dispatchers(cores);
-
     for (int i = 0; i < cores; ++i) {
       routers[i] = std::make_unique<Router>(i, worker_ptrs,
           [ex = executors[i].get(), wptr = worker_ptrs](Task task) mutable {
@@ -82,15 +79,15 @@ int main(int argc, char *argv[]) {
           });
     }
 
-    handlers[0] = std::make_unique<GrpcHandler>(0, *routers[0]);
-    dispatchers[0] = std::make_unique<CoreDispatcher>(*routers[0], *handlers[0]);
+    auto handler = std::make_unique<GrpcHandler>(0, *routers[0]);
+    auto dispatcher = std::make_unique<CoreDispatcher>(*routers[0], *handler);
 
-    workers[0]->RegisterGrpcService(&handlers[0]->GetService());
-    workers[0]->SetTaskProcessor([&dispatcher = *dispatchers[0]](Task task) {
-      dispatcher.Dispatch(std::move(task));
+    workers[0]->RegisterGrpcService(&handler->GetService());
+    workers[0]->SetTaskProcessor([&dispatcher_ref = *dispatcher](Task task) {
+      dispatcher_ref.Dispatch(std::move(task));
     });
-    workers[0]->AddStartupTask([&worker = *workers[0], &handler = *handlers[0]]() {
-      handler.RegisterHandlers(worker.GetGrpcContext());
+    workers[0]->AddStartupTask([&worker = *workers[0], &handler_ref = *handler]() {
+      handler_ref.RegisterHandlers(worker.GetGrpcContext());
     });
 
     for (int i = 1; i < cores; ++i) {
