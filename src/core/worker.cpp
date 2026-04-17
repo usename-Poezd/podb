@@ -1,6 +1,7 @@
 #include "core/worker.h"
 
 #include <agrpc/run.hpp>
+#include <cassert>
 #include <boost/asio/buffer.hpp>
 #include <cstdint>
 #include <grpc/grpc.h>
@@ -16,8 +17,8 @@
 
 using namespace db;
 
-Worker::Worker(int core_id, int port)
-    : core_id_(core_id), port_(port), event_fd_(-1), event_fd_stream_(io_context_) {}
+Worker::Worker(int core_id, WorkerMode mode, int port)
+    : core_id_(core_id), mode_(mode), port_(port), event_fd_(-1), event_fd_stream_(io_context_) {}
 
 Worker::~Worker() {
   Stop();
@@ -26,17 +27,24 @@ Worker::~Worker() {
   }
 }
 
-void Worker::RegisterGrpcService(grpc::Service *service) { builder_.RegisterService(service); }
+void Worker::RegisterGrpcService(grpc::Service *service) {
+  if (mode_ != WorkerMode::Ingress) return;
+  builder_.RegisterService(service);
+}
 
 void Worker::SetTaskProcessor(std::function<void(Task)> processor) {
   task_processor_ = std::move(processor);
 }
 
 void Worker::AddStartupTask(std::function<void()> task) {
+  if (mode_ != WorkerMode::Ingress) return;
   startup_tasks_.push_back(std::move(task));
 }
 
-agrpc::GrpcContext &Worker::GetGrpcContext() { return grpc_context_.value(); }
+agrpc::GrpcContext &Worker::GetGrpcContext() {
+  assert(mode_ == WorkerMode::Ingress && "GetGrpcContext() only valid on Ingress core");
+  return grpc_context_.value();
+}
 
 void Worker::Start() {
   running_ = true;
@@ -92,15 +100,13 @@ void Worker::SetCpuAffinity() {
 void Worker::BuildAndStartGrpcServer() {
   const std::string server_address = "0.0.0.0:" + std::to_string(port_);
 
-  builder_.AddChannelArgument(GRPC_ARG_ALLOW_REUSEPORT, 1);
   builder_.AddListeningPort(server_address, grpc::InsecureServerCredentials());
 
   auto grpc_cq = builder_.AddCompletionQueue();
   server_ = builder_.BuildAndStart();
   grpc_context_.emplace(std::move(grpc_cq));
 
-  std::cout << "[Core " << core_id_ << "] gRPC Server listening on " << server_address
-            << " (SO_REUSEPORT)\n";
+  std::cout << "[Core " << core_id_ << "] gRPC Server listening on " << server_address << "\n";
 }
 
 void Worker::InitEventFd() {
@@ -130,11 +136,14 @@ void Worker::RunLoop() {
   SetCpuAffinity();
   InitEventFd();
   StartEventFdRead();
-  BuildAndStartGrpcServer();
 
-  for (auto &init_task : startup_tasks_) {
-    init_task();
+  if (mode_ == WorkerMode::Ingress) {
+    BuildAndStartGrpcServer();
+    for (auto &init_task : startup_tasks_) {
+      init_task();
+    }
+    agrpc::run(*grpc_context_, io_context_);
+  } else {
+    io_context_.run();
   }
-
-  agrpc::run(*grpc_context_, io_context_);
 }

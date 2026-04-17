@@ -43,16 +43,15 @@ int main(int argc, char *argv[]) {
     std::cout << "[Main] Starting STRICT Thread-per-Core engine.\n";
     std::cout << "[Main] Total cores: " << cores << ". Port: " << port << "\n";
 
-    std::vector<std::unique_ptr<StorageEngine>> storages;
-    storages.reserve(cores);
+    std::vector<std::unique_ptr<StorageEngine>> storages(cores);
     for (int i = 0; i < cores; ++i) {
-      storages.push_back(std::make_unique<StorageEngine>());
+      storages[i] = std::make_unique<StorageEngine>();
     }
 
-    std::vector<std::unique_ptr<Worker>> workers;
-    workers.reserve(cores);
-    for (int i = 0; i < cores; ++i) {
-      workers.push_back(std::make_unique<Worker>(i, port));
+    std::vector<std::unique_ptr<Worker>> workers(cores);
+    workers[0] = std::make_unique<Worker>(0, WorkerMode::Ingress, port);
+    for (int i = 1; i < cores; ++i) {
+      workers[i] = std::make_unique<Worker>(i, WorkerMode::WorkerOnly, port);
     }
 
     std::vector<Worker *> worker_ptrs;
@@ -61,28 +60,26 @@ int main(int argc, char *argv[]) {
       worker_ptrs.push_back(w.get());
     }
 
-    std::vector<std::unique_ptr<Router>> routers;
-    std::vector<std::unique_ptr<GrpcHandler>> handlers;
-    std::vector<std::unique_ptr<CoreDispatcher>> dispatchers;
-    routers.reserve(cores);
-    handlers.reserve(cores);
-    dispatchers.reserve(cores);
+    std::vector<std::unique_ptr<Router>> routers(cores);
+    std::vector<std::unique_ptr<GrpcHandler>> handlers(cores);
+    std::vector<std::unique_ptr<CoreDispatcher>> dispatchers(cores);
 
-    for (int i = 0; i < cores; ++i) {
-      routers.push_back(std::make_unique<Router>(i, worker_ptrs, *storages[i]));
+    routers[0] = std::make_unique<Router>(0, worker_ptrs, *storages[0]);
+    handlers[0] = std::make_unique<GrpcHandler>(0, *routers[0]);
+    dispatchers[0] = std::make_unique<CoreDispatcher>(*routers[0], *handlers[0]);
 
-      handlers.push_back(std::make_unique<GrpcHandler>(i, *routers[i]));
+    workers[0]->RegisterGrpcService(&handlers[0]->GetService());
+    workers[0]->SetTaskProcessor([&dispatcher = *dispatchers[0]](Task task) {
+      dispatcher.Dispatch(std::move(task));
+    });
+    workers[0]->AddStartupTask([&worker = *workers[0], &handler = *handlers[0]]() {
+      handler.RegisterHandlers(worker.GetGrpcContext());
+    });
 
-      dispatchers.push_back(std::make_unique<CoreDispatcher>(*routers[i], *handlers[i]));
-
-      workers[i]->RegisterGrpcService(&handlers[i]->GetService());
-
-      workers[i]->SetTaskProcessor([&dispatcher = *dispatchers[i]](Task task) {
-        dispatcher.Dispatch(std::move(task));
-      });
-
-      workers[i]->AddStartupTask([&worker = *workers[i], &handler = *handlers[i]]() {
-        handler.RegisterHandlers(worker.GetGrpcContext());
+    for (int i = 1; i < cores; ++i) {
+      routers[i] = std::make_unique<Router>(i, worker_ptrs, *storages[i]);
+      workers[i]->SetTaskProcessor([&router = *routers[i]](Task task) {
+        router.RouteTask(std::move(task));
       });
     }
 

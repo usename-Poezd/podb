@@ -23,9 +23,11 @@
 
 namespace db {
 
+enum class WorkerMode { Ingress, WorkerOnly };
+
 class alignas(64) Worker {
 public:
-  Worker(int core_id, int port);
+  Worker(int core_id, WorkerMode mode, int port);
   ~Worker();
 
   Worker(const Worker &) = delete;
@@ -62,6 +64,7 @@ private:
   void BuildAndStartGrpcServer();
 
   int core_id_;
+  WorkerMode mode_;
   int port_;
   std::atomic<bool> running_{false};
   std::thread thread_;
