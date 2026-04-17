@@ -6,10 +6,11 @@
 #include <boost/asio.hpp>
 #include <boost/program_options.hpp>
 
-#include "grpc_handler.h"
-#include "router.h"
-#include "storage_engine.h"
-#include "worker.h"
+#include "handlers/grpc_handler.h"
+#include "router/router.h"
+#include "storage/storage_engine.h"
+#include "core/worker.h"
+#include "core/core_dispatcher.h"
 
 namespace po = boost::program_options;
 using namespace db;
@@ -62,22 +63,22 @@ int main(int argc, char *argv[]) {
 
     std::vector<std::unique_ptr<Router>> routers;
     std::vector<std::unique_ptr<GrpcHandler>> handlers;
+    std::vector<std::unique_ptr<CoreDispatcher>> dispatchers;
     routers.reserve(cores);
     handlers.reserve(cores);
+    dispatchers.reserve(cores);
 
     for (int i = 0; i < cores; ++i) {
       routers.push_back(std::make_unique<Router>(i, worker_ptrs, *storages[i]));
 
       handlers.push_back(std::make_unique<GrpcHandler>(i, *routers[i]));
 
+      dispatchers.push_back(std::make_unique<CoreDispatcher>(*routers[i], *handlers[i]));
+
       workers[i]->RegisterGrpcService(&handlers[i]->GetService());
 
-      workers[i]->SetTaskProcessor([&router = *routers[i], &handler = *handlers[i]](Task task) {
-        if (task.type == TaskType::GET_RESPONSE || task.type == TaskType::SET_RESPONSE) {
-          handler.ResumeCoroutine(task.request_id, std::move(task));
-        } else {
-          router.RouteTask(std::move(task));
-        }
+      workers[i]->SetTaskProcessor([&dispatcher = *dispatchers[i]](Task task) {
+        dispatcher.Dispatch(std::move(task));
       });
 
       workers[i]->AddStartupTask([&worker = *workers[i], &handler = *handlers[i]]() {

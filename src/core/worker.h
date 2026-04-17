@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -11,12 +12,14 @@
 #include <sys/eventfd.h>
 
 #include <agrpc/asio_grpc.hpp>
-#include <boost/asio.hpp>
+#include <agrpc/grpc_context.hpp>
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/posix/stream_descriptor.hpp>
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/server_builder.h>
 #include <moodycamel/concurrentqueue.h>
 
-#include "task.h"
+#include "core/task.h"
 
 namespace db {
 

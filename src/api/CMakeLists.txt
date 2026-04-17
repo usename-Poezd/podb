@@ -18,7 +18,7 @@ add_custom_command(
 )
 
 add_library(db_api STATIC ${PROTO_SRCS})
-target_link_libraries(db_api PUBLIC gRPC::grpc++ protobuf::libprotobuf)
+target_link_libraries(db_api PUBLIC db_project_headers gRPC::grpc++ protobuf::libprotobuf)
 
 target_include_directories(db_api PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 

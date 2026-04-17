@@ -3,8 +3,9 @@
 #include <string>
 #include <vector>
 
-#include "storage_engine.h"
-#include "task.h"
+#include "core/task.h"
+#include "execution/kv_executor.h"
+#include "storage/storage_engine.h"
 
 namespace db {
 
@@ -25,6 +26,7 @@ private:
   int num_cores_;
   std::vector<Worker *> all_workers_;
   StorageEngine &local_storage_;
+  KvExecutor executor_;
 };
 
 } // namespace db

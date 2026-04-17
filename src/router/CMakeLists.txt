@@ -1,6 +1,7 @@
 add_library(db_router STATIC router.cpp)
 
 target_link_libraries(db_router PUBLIC
+    db_project_headers
     db_core
     db_storage
 )

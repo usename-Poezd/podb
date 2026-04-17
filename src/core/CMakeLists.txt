@@ -1,6 +1,7 @@
 add_library(db_core STATIC worker.cpp)
 
 target_link_libraries(db_core PUBLIC
+    db_project_headers
     db_api
     asio-grpc::asio-grpc
     concurrentqueue::concurrentqueue

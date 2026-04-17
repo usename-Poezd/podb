@@ -1,22 +1,32 @@
 #pragma once
 
+#include <coroutine>
+#include <cstdio>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
+#include <agrpc/grpc_context.hpp>
 #include <agrpc/register_awaitable_rpc_handler.hpp>
 #include <agrpc/server_rpc.hpp>
 #include <boost/asio/any_io_executor.hpp>
+#include <boost/asio/awaitable.hpp>
 #include <boost/asio/async_result.hpp>
 #include <boost/asio/detached.hpp>
 
 #include <boost/asio/use_awaitable.hpp>
 #include <grpcpp/grpcpp.h>
+#include <grpcpp/support/status.h>
 
-#include "router.h"
-#include "service.grpc.pb.h"
-#include "service.pb.h"
-#include "slab_allocator.h"
+#include "router/router.h"
+#include "api/service.grpc.pb.h"
+#include "api/service.pb.h"
+#include "async/request_tracker.h"
+#include "core/task.h"
 
 namespace db {
 
@@ -28,8 +38,7 @@ public:
   static constexpr size_t kMaxConcurrent = 65536;
 
   GrpcHandler(int core_id, Router &router)
-      : core_id_(core_id), router_(router), response_slots_(kMaxConcurrent),
-        completion_handlers_(kMaxConcurrent) {}
+      : core_id_(core_id), router_(router), tracker_(kMaxConcurrent) {}
 
   db::Database::AsyncService &GetService() { return service_; }
 
@@ -50,16 +59,7 @@ public:
   }
 
   void ResumeCoroutine(uint64_t request_id, Task response) {
-    uint32_t index = static_cast<uint32_t>(request_id & 0xFFFFFFFF);
-    if (index < response_slots_.size()) {
-      response_slots_[index] = std::move(response);
-    }
-    slab_.GetAndFree(request_id);
-    if (index < completion_handlers_.size() && completion_handlers_[index]) {
-      auto handler = std::move(completion_handlers_[index]);
-      completion_handlers_[index] = nullptr;
-      handler();
-    }
+    tracker_.Fulfill(request_id, std::move(response));
   }
 
 private:
@@ -72,16 +72,16 @@ private:
 
           auto shared_ch = std::make_shared<Handler>(std::move(completion_handler));
 
-          Task routed_task = std::move(task);
-          uint64_t rid = slab_.Allocate(std::coroutine_handle<>{});
-          uint32_t index = static_cast<uint32_t>(rid & 0xFFFFFFFF);
+           Task routed_task = std::move(task);
+           uint64_t rid = tracker_.AllocSlot();
+           uint32_t index = static_cast<uint32_t>(rid & 0xFFFFFFFF);
           routed_task.request_id = rid;
           routed_task.reply_to_core = core_id_;
 
-          completion_handlers_[index] = [this, index, shared_ch]() {
-            auto resp = std::move(response_slots_[index]);
+          tracker_.SetCompletion(index, [this, index, shared_ch]() {
+            auto resp = tracker_.GetResponse(index);
             (*shared_ch)(std::move(resp));
-          };
+          });
 
           router_.RouteTask(std::move(routed_task));
         },
@@ -121,9 +121,7 @@ private:
   int core_id_;
   db::Database::AsyncService service_;
   Router &router_;
-  SlabAllocator slab_;
-  std::vector<Task> response_slots_;
-  std::vector<std::function<void()>> completion_handlers_;
+  RequestTracker tracker_;
 };
 
-} // namespace db
+}

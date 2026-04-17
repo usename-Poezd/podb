@@ -30,14 +30,30 @@ inline const char *TaskTypeName(TaskType t) noexcept {
 struct Task {
   TaskType type{TaskType::GET_REQUEST};
 
+  // --- Request payload ---
   std::string key;
   std::string value;
 
+  // --- Response payload ---
   bool found{false};
   bool success{true};
 
+  // --- Routing/correlation ---
   uint64_t request_id{0};
   int reply_to_core{-1};
+
+  // Helper methods
+  bool IsRequest() const noexcept {
+    return type == TaskType::GET_REQUEST || type == TaskType::SET_REQUEST;
+  }
+
+  bool IsResponse() const noexcept {
+    return type == TaskType::GET_RESPONSE || type == TaskType::SET_RESPONSE;
+  }
+
+  const char* OpName() const noexcept {
+    return (type == TaskType::GET_REQUEST || type == TaskType::GET_RESPONSE) ? "GET" : "SET";
+  }
 };
 
 } // namespace db

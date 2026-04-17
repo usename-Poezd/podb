@@ -1,2 +1,3 @@
 add_library(db_storage INTERFACE)
+target_link_libraries(db_storage INTERFACE db_project_headers)
 target_include_directories(db_storage INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})

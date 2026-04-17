@@ -1,6 +1,6 @@
 #pragma once
 
-#include <coroutine>
+#include <cstddef>
 #include <cstdint>
 #include <stdexcept>
 #include <vector>
@@ -8,7 +8,6 @@
 namespace db {
 
 struct alignas(8) Slot {
-  std::coroutine_handle<> coroutine = nullptr;
   uint32_t next_free_index = 0;
   uint32_t generation = 0;
 };
@@ -24,29 +23,25 @@ public:
   SlabAllocator(const SlabAllocator &) = delete;
   SlabAllocator &operator=(const SlabAllocator &) = delete;
 
-  uint64_t Allocate(std::coroutine_handle<> coro) {
+  uint64_t Allocate() {
     if (free_head_ >= slots_.size()) {
       throw std::runtime_error("SlabAllocator capacity exhausted!");
     }
     uint32_t index = free_head_;
     free_head_ = slots_[index].next_free_index;
-    slots_[index].coroutine = coro;
     uint64_t request_id = (static_cast<uint64_t>(slots_[index].generation) << 32) | index;
     return request_id;
   }
 
-  std::coroutine_handle<> GetAndFree(uint64_t request_id) {
+  void GetAndFree(uint64_t request_id) {
     uint32_t index = static_cast<uint32_t>(request_id & 0xFFFFFFFF);
     uint32_t generation = static_cast<uint32_t>(request_id >> 32);
     if (index >= slots_.size() || slots_[index].generation != generation) {
-      return nullptr;
+      return;
     }
-    std::coroutine_handle<> coro = slots_[index].coroutine;
-    slots_[index].coroutine = nullptr;
     slots_[index].generation++;
     slots_[index].next_free_index = free_head_;
     free_head_ = index;
-    return coro;
   }
 
 private:
