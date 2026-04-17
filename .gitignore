@@ -19,3 +19,6 @@ src/**/*.grpc.pb.h
 *.swo
 *~
 .DS_Store
+
+# Локальные артефакты агента
+.sisyphus/

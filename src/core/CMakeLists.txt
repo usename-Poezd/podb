@@ -1,4 +1,4 @@
-add_library(db_core STATIC worker.cpp)
+add_library(db_core STATIC worker.cpp task.cpp slab_allocator.cpp core_dispatcher.cpp)
 
 target_link_libraries(db_core PUBLIC
     db_project_headers

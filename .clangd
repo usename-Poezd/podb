@@ -1,5 +1,5 @@
 CompileFlags:
-  CompilationDatabase: Ancestors
+  CompilationDatabase: build
 
 Diagnostics:
   UnusedIncludes: Strict
@@ -16,7 +16,6 @@ InlayHints:
 ---
 If:
   PathMatch: .*\.h
-
 CompileFlags:
   Add:
     - -xc++
