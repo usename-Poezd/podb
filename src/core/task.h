@@ -1,8 +1,9 @@
 #pragma once
 
 #include <cstdint>
-
 #include <string>
+
+#include "core/types.h"
 
 namespace db {
 
@@ -32,7 +33,7 @@ struct Task {
 
   // --- Request payload ---
   std::string key;
-  std::string value;
+  BinaryValue value;
 
   // --- Response payload ---
   bool found{false};
@@ -51,9 +52,9 @@ struct Task {
     return type == TaskType::GET_RESPONSE || type == TaskType::SET_RESPONSE;
   }
 
-  const char* OpName() const noexcept {
+  const char *OpName() const noexcept {
     return (type == TaskType::GET_REQUEST || type == TaskType::GET_RESPONSE) ? "GET" : "SET";
   }
 };
 
-} // namespace db
+}  // namespace db

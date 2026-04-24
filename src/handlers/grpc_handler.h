@@ -4,11 +4,9 @@
 #include <cstdio>
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <type_traits>
 #include <utility>
-#include <vector>
 
 #include <agrpc/grpc_context.hpp>
 #include <agrpc/register_awaitable_rpc_handler.hpp>
@@ -17,7 +15,6 @@
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/async_result.hpp>
 #include <boost/asio/detached.hpp>
-
 #include <boost/asio/use_awaitable.hpp>
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/support/status.h>
@@ -27,6 +24,7 @@
 #include "api/service.pb.h"
 #include "async/request_tracker.h"
 #include "core/task.h"
+#include "handlers/proto_convert.h"
 
 namespace db {
 
@@ -72,9 +70,9 @@ private:
 
           auto shared_ch = std::make_shared<Handler>(std::move(completion_handler));
 
-           Task routed_task = std::move(task);
-           uint64_t rid = tracker_.AllocSlot();
-           uint32_t index = static_cast<uint32_t>(rid & 0xFFFFFFFF);
+          Task routed_task = std::move(task);
+          uint64_t rid = tracker_.AllocSlot();
+          uint32_t index = static_cast<uint32_t>(rid & 0xFFFFFFFF);
           routed_task.request_id = rid;
           routed_task.reply_to_core = core_id_;
 
@@ -99,17 +97,17 @@ private:
     db::GetResponse grpc_resp;
     grpc_resp.set_found(response.found);
     if (response.found)
-      grpc_resp.set_value(response.value);
+      grpc_resp.set_value(ToProtoBytes(response.value));
     co_await rpc.finish(grpc_resp, grpc::Status::OK, boost::asio::use_awaitable);
   }
 
   boost::asio::awaitable<void> HandleSet(SetRPC &rpc, db::SetRequest &req) {
-    std::printf("[Core %d] >>> SET  \"%.20s\" = \"%.20s\"\n", core_id_, req.key().c_str(),
-                req.value().c_str());
+    std::printf("[Core %d] >>> SET  \"%.20s\" size=%zu\n", core_id_, req.key().c_str(),
+                req.value().size());
     Task task;
     task.type = TaskType::SET_REQUEST;
     task.key = req.key();
-    task.value = req.value();
+    task.value = FromProtoBytes(req.value());
     Task response = co_await WaitForResponse(std::move(task));
     std::printf("[Core %d] <<< SET  \"%.20s\" ok=%s\n", core_id_, response.key.c_str(),
                 response.success ? "yes" : "no");
@@ -124,4 +122,4 @@ private:
   RequestTracker tracker_;
 };
 
-}
+}  // namespace db

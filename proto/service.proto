@@ -15,7 +15,7 @@ service Database {
 // --- Сообщения для Set ---
 message SetRequest {
     string key = 1;
-    string value = 2;
+    bytes value = 2;
 }
 
 message SetResponse {
@@ -30,5 +30,5 @@ message GetRequest {
 
 message GetResponse {
     bool found = 1;
-    string value = 2; // Пусто, если found = false
+    bytes value = 2; // Пусто, если found = false
 }

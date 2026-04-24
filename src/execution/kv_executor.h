@@ -16,14 +16,16 @@ public:
   Task Execute(Task request) {
     Task response;
     switch (request.type) {
-    case TaskType::SET_REQUEST:
-      storage_.Set(request.key, request.value);
-      std::printf("[Core %d] EXEC SET \"%.20s\" = \"%.20s\" → OK   reply→Core %d\n",
-                  core_id_, request.key.c_str(), request.value.c_str(), request.reply_to_core);
+    case TaskType::SET_REQUEST: {
+      const std::size_t value_size = request.value.size();
+      storage_.Set(request.key, std::move(request.value));
+      std::printf("[Core %d] EXEC SET \"%.20s\" size=%zu → OK   reply→Core %d\n",
+                  core_id_, request.key.c_str(), value_size, request.reply_to_core);
       response.type = TaskType::SET_RESPONSE;
       response.key = std::move(request.key);
       response.success = true;
       break;
+    }
     case TaskType::GET_REQUEST: {
       auto result = storage_.Get(request.key);
       bool found = result.has_value();
@@ -49,4 +51,4 @@ private:
   int core_id_;
 };
 
-} // namespace db
+}  // namespace db
