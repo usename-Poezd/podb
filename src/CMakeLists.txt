@@ -5,6 +5,8 @@ add_subdirectory(api)
 add_subdirectory(core)
 add_subdirectory(storage)
 add_subdirectory(wal)
+add_subdirectory(checkpoint)
+add_subdirectory(recovery)
 add_subdirectory(execution)
 add_subdirectory(async)
 add_subdirectory(router)
@@ -20,8 +22,10 @@ target_link_libraries(db_engine PRIVATE
     db_async
     db_execution
     db_transaction
+    db_recovery
+    db_wal
+    db_checkpoint
     db_core
     Boost::program_options
     Threads::Threads
 )
-

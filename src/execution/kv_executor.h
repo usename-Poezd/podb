@@ -6,13 +6,14 @@
 #include "core/task.h"
 #include "storage/storage_engine.h"
 #include "storage/versioned_value.h"
+#include "wal/wal_writer.h"
 
 namespace db {
 
 class KvExecutor {
 public:
-  KvExecutor(StorageEngine &storage, int core_id)
-      : storage_(storage), core_id_(core_id) {}
+  KvExecutor(StorageEngine &storage, int core_id, WalWriter *wal = nullptr)
+      : storage_(storage), core_id_(core_id), wal_(wal) {}
 
   Task Execute(Task request) {
     Task response;
@@ -55,6 +56,15 @@ public:
       break;
     }
     case TaskType::TX_EXECUTE_SET_REQUEST: {
+      if (wal_) {
+        WalRecord rec;
+        rec.type = WalRecordType::INTENT;
+        rec.tx_id = request.tx_id;
+        rec.key = request.key;
+        rec.value = request.value;
+        rec.is_deleted = false;
+        wal_->Append(std::move(rec));
+      }
       // MVCC запись intent
       auto result = storage_.WriteIntent(request.key, std::move(request.value), request.tx_id);
       std::printf("[Core %d] EXEC TX_SET \"%.20s\" tx=%lu → %s reply→Core %d\n",
@@ -73,6 +83,13 @@ public:
       break;
     }
     case TaskType::TX_FINALIZE_COMMIT_REQUEST: {
+      if (wal_) {
+        WalRecord rec;
+        rec.type = WalRecordType::COMMIT_FINALIZE;
+        rec.tx_id = request.tx_id;
+        rec.commit_ts = request.commit_ts;
+        wal_->Append(std::move(rec));
+      }
       // Финализация commit: promote intents → committed
       storage_.CommitTransaction(request.tx_id, request.commit_ts);
       std::printf("[Core %d] EXEC FIN_COMMIT tx=%lu commit_ts=%lu\n",
@@ -84,6 +101,15 @@ public:
     }
     case TaskType::TX_PREPARE_REQUEST: {
       auto result = storage_.ValidatePrepare(request.tx_id);
+      // WAL логирование PREPARE только при YES-голосе; fdatasync гарантирует durability
+      if (result.can_commit && wal_) {
+        WalRecord rec;
+        rec.type = WalRecordType::PREPARE;
+        rec.tx_id = request.tx_id;
+        rec.vote_yes = true;
+        wal_->Append(std::move(rec));
+        wal_->Sync();  // CRITICAL: fdatasync сбрасывает PREPARE + все предшествующие INTENT
+      }
       std::printf("[Core %d] EXEC PREPARE tx=%lu → %s\n",
                   core_id_, request.tx_id,
                   result.can_commit ? "YES" : "NO");
@@ -95,6 +121,12 @@ public:
       break;
     }
     case TaskType::TX_FINALIZE_ABORT_REQUEST: {
+      if (wal_) {
+        WalRecord rec;
+        rec.type = WalRecordType::ABORT_FINALIZE;
+        rec.tx_id = request.tx_id;
+        wal_->Append(std::move(rec));
+      }
       storage_.AbortTransaction(request.tx_id);
       std::printf("[Core %d] EXEC FIN_ABORT tx=%lu\n", core_id_, request.tx_id);
       response.type = TaskType::TX_FINALIZE_ABORT_RESPONSE;
@@ -113,6 +145,7 @@ public:
 private:
   StorageEngine &storage_;
   int core_id_;
+  WalWriter *wal_{nullptr};
 };
 
 }  // namespace db

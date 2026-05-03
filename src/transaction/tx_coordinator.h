@@ -7,6 +7,8 @@
 
 #include "core/task.h"
 #include "router/router.h"
+#include "wal/wal_record.h"
+#include "wal/wal_writer.h"
 
 namespace db {
 
@@ -38,8 +40,8 @@ class TxCoordinator {
   /// @param router Ссылка на Router для маршрутизации Execute операций
   /// @param resume_fn Callback для возврата ответа в GrpcHandler
   /// (через request_id)
-  TxCoordinator(Router& router,
-                std::function<void(uint64_t, Task)> resume_fn);
+  TxCoordinator(Router& router, std::function<void(uint64_t, Task)> resume_fn,
+                WalWriter* wal = nullptr);
 
   /// Обработка control-операций (Begin/Commit/Rollback/Heartbeat).
   /// Эти операции не покидают Core 0.
@@ -54,6 +56,13 @@ class TxCoordinator {
 
   /// Обработка голосов PREPARE от participant cores.
   void HandlePrepareResponse(Task task);  // NOLINT(performance-unnecessary-value-param)
+
+  /// Загрузить восстановленное состояние coordinator из WAL replay.
+  void LoadRecoveredState(std::unordered_map<uint64_t, TxRecord> recovered_tx_table,
+                          uint64_t next_tx_id, uint64_t next_snapshot_ts);
+
+  /// Разрешить in-doubt транзакции после recovery.
+  void ResolveInDoubt();
 
  private:
   /// Ожидание завершения финализации на participant cores
@@ -85,6 +94,7 @@ class TxCoordinator {
 
   Router& router_;  // NOLINT(cppcoreguidelines-avoid-const-or-ref-data-members)
   std::function<void(uint64_t, Task)> resume_fn_;
+  WalWriter* wal_{nullptr};
 
   /// Таблица активных и завершённых транзакций
   std::unordered_map<uint64_t, TxRecord> tx_table_;

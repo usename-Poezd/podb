@@ -3,8 +3,9 @@
 namespace db {
 
 TxCoordinator::TxCoordinator(Router& router,
-                             std::function<void(uint64_t, Task)> resume_fn)
-    : router_(router), resume_fn_(std::move(resume_fn)) {}
+                             std::function<void(uint64_t, Task)> resume_fn,
+                             WalWriter* wal)
+    : router_(router), resume_fn_(std::move(resume_fn)), wal_(wal) {}
 
 void TxCoordinator::HandleControl(Task task) {
   switch (task.type) {
@@ -72,6 +73,14 @@ void TxCoordinator::HandleBegin(Task& task) {
       .last_heartbeat_ts = now_ts,
       .participant_cores = {},
   };
+
+  if (wal_) {
+    WalRecord rec;
+    rec.type = WalRecordType::TX_BEGIN;
+    rec.tx_id = tx_id;
+    rec.snapshot_ts = snapshot_ts;
+    wal_->Append(std::move(rec));
+  }
 
   Task response;
   response.type = TaskType::TX_BEGIN_RESPONSE;
@@ -148,6 +157,13 @@ void TxCoordinator::HandleRollback(Task& task) {
     return;
   }
 
+  if (wal_) {
+    WalRecord rec;
+    rec.type = WalRecordType::ABORT_DECISION;
+    rec.tx_id = task.tx_id;
+    wal_->Append(std::move(rec));
+  }
+
   tx_it->second.state = TxState::ABORTED;
   const auto& participants = tx_it->second.participant_cores;
 
@@ -207,8 +223,16 @@ void TxCoordinator::HandlePrepareResponse(
   pending_finalize.client_response_type = TaskType::TX_COMMIT_RESPONSE;
 
   if (!pending_prepare_it->second.any_no) {
-    tx_it->second.state = TxState::COMMITTED;
     const uint64_t commit_ts = next_snapshot_ts_++;
+    if (wal_) {
+      WalRecord rec;
+      rec.type = WalRecordType::COMMIT_DECISION;
+      rec.tx_id = task.tx_id;
+      rec.commit_ts = commit_ts;
+      wal_->Append(std::move(rec));
+      wal_->Sync();
+    }
+    tx_it->second.state = TxState::COMMITTED;
     pending_finalize.is_commit = true;
     pending_finalizes_[task.tx_id] = pending_finalize;
 
@@ -221,6 +245,12 @@ void TxCoordinator::HandlePrepareResponse(
       router_.SendToCore(core, std::move(finalize_task));
     }
   } else {
+    if (wal_) {
+      WalRecord rec;
+      rec.type = WalRecordType::ABORT_DECISION;
+      rec.tx_id = task.tx_id;
+      wal_->Append(std::move(rec));
+    }
     tx_it->second.state = TxState::ABORTED;
     pending_finalize.is_commit = false;
     pending_finalize.error_message =
@@ -285,6 +315,66 @@ void TxCoordinator::HandleFinalizeResponse(
     const uint64_t request_id = pending_finalize_it->second.client_request_id;
     pending_finalizes_.erase(pending_finalize_it);
     SendResponse(request_id, std::move(response));
+  }
+}
+
+void TxCoordinator::LoadRecoveredState(
+    std::unordered_map<uint64_t, TxRecord> recovered_tx_table,
+    uint64_t next_tx_id, uint64_t next_snapshot_ts) {
+  tx_table_ = std::move(recovered_tx_table);
+  next_tx_id_ = next_tx_id;
+  next_snapshot_ts_ = next_snapshot_ts;
+}
+
+void TxCoordinator::ResolveInDoubt() {
+  for (auto& [tx_id, record] : tx_table_) {
+    if (record.participant_cores.empty()) {
+      continue;
+    }
+
+    if (record.state == TxState::COMMITTED) {
+      PendingFinalize pf;
+      pf.client_request_id = 0;
+      pf.tx_id = tx_id;
+      pf.remaining = static_cast<int>(record.participant_cores.size());
+      pf.is_commit = true;
+      pf.client_response_type = TaskType::TX_COMMIT_RESPONSE;
+      pending_finalizes_[tx_id] = pf;
+
+      for (int core : record.participant_cores) {
+        Task finalize_task;
+        finalize_task.type = TaskType::TX_FINALIZE_COMMIT_REQUEST;
+        finalize_task.tx_id = tx_id;
+        finalize_task.commit_ts = record.snapshot_ts;
+        finalize_task.reply_to_core = 0;
+        router_.SendToCore(core, std::move(finalize_task));
+      }
+    } else if (record.state == TxState::PREPARING ||
+               record.state == TxState::ACTIVE) {
+      record.state = TxState::ABORTED;
+      if (wal_) {
+        WalRecord wal_rec;
+        wal_rec.type = WalRecordType::ABORT_DECISION;
+        wal_rec.tx_id = tx_id;
+        wal_->Append(std::move(wal_rec));
+      }
+
+      PendingFinalize pf;
+      pf.client_request_id = 0;
+      pf.tx_id = tx_id;
+      pf.remaining = static_cast<int>(record.participant_cores.size());
+      pf.is_commit = false;
+      pf.client_response_type = TaskType::TX_COMMIT_RESPONSE;
+      pending_finalizes_[tx_id] = pf;
+
+      for (int core : record.participant_cores) {
+        Task finalize_task;
+        finalize_task.type = TaskType::TX_FINALIZE_ABORT_REQUEST;
+        finalize_task.tx_id = tx_id;
+        finalize_task.reply_to_core = 0;
+        router_.SendToCore(core, std::move(finalize_task));
+      }
+    }
   }
 }
 
