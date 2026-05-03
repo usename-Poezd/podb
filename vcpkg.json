@@ -8,6 +8,7 @@
     "protobuf",
     "asio-grpc",
     "concurrentqueue",
-    "jemalloc"
+    "jemalloc",
+    "gtest"
   ]
 }

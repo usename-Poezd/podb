@@ -17,3 +17,8 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(JEMALLOC REQUIRED IMPORTED_TARGET jemalloc)
 
 add_subdirectory(src)
+
+enable_testing()
+find_package(GTest CONFIG REQUIRED)
+include(GoogleTest)
+add_subdirectory(tests)

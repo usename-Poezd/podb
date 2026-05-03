@@ -15,7 +15,7 @@ endif
 VCPKG_TOOLCHAIN := $(VCPKG_ROOT)/scripts/buildsystems/vcpkg.cmake
 
 # Цели, которые не являются файлами
-.PHONY: all configure build clean docker-build docker-run
+.PHONY: all configure build clean test docker-build docker-run
 
 # Цель по умолчанию
 all: build
@@ -54,6 +54,11 @@ docker-run:
 		--privileged \
 		-v $(PWD):/app \
 		$(PROJECT_NAME)_env
+
+# 2.5 Запуск тестов
+test: build
+	@echo "==> Запуск тестов..."
+	ctest --test-dir $(BUILD_DIR) --output-on-failure
 
 proto: configure
 	@echo "==> Запуск генерации .proto файлов..."
