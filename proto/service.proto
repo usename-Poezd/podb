@@ -10,6 +10,21 @@ service Database {
     
     // Метод для чтения значения по ключу
     rpc Get (GetRequest) returns (GetResponse);
+    
+    // Начало транзакции
+    rpc BeginTransaction (BeginTxRequest) returns (BeginTxResponse);
+    
+    // Выполнение операции внутри транзакции
+    rpc Execute (ExecuteRequest) returns (ExecuteResponse);
+    
+    // Фиксация транзакции
+    rpc Commit (CommitRequest) returns (CommitResponse);
+    
+    // Откат транзакции
+    rpc Rollback (RollbackRequest) returns (RollbackResponse);
+    
+    // Продление lease транзакции
+    rpc Heartbeat (HeartbeatRequest) returns (HeartbeatResponse);
 }
 
 // --- Сообщения для Set ---
@@ -31,4 +46,63 @@ message GetRequest {
 message GetResponse {
     bool found = 1;
     bytes value = 2; // Пусто, если found = false
+}
+
+// --- Сообщения для BeginTransaction ---
+message BeginTxRequest {
+    string isolation_level = 1; // "SNAPSHOT" по умолчанию
+}
+
+message BeginTxResponse {
+    uint64 tx_id = 1;
+    uint64 snapshot_ts = 2;
+    bool success = 3;
+    string error = 4;
+}
+
+// --- Сообщения для Execute ---
+message ExecuteRequest {
+    uint64 tx_id = 1;
+    string operation = 2;   // "GET" или "SET"
+    string key = 3;
+    bytes value = 4;        // Пусто для GET
+}
+
+message ExecuteResponse {
+    uint64 tx_id = 1;
+    bool found = 2;         // Для GET: найден ли ключ
+    bytes value = 3;        // Для GET: значение
+    bool success = 4;
+    string error = 5;
+}
+
+// --- Сообщения для Commit ---
+message CommitRequest {
+    uint64 tx_id = 1;
+}
+
+message CommitResponse {
+    uint64 tx_id = 1;
+    bool success = 2;
+    string error = 3;
+}
+
+// --- Сообщения для Rollback ---
+message RollbackRequest {
+    uint64 tx_id = 1;
+}
+
+message RollbackResponse {
+    uint64 tx_id = 1;
+    bool success = 2;
+}
+
+// --- Сообщения для Heartbeat ---
+message HeartbeatRequest {
+    uint64 tx_id = 1;
+}
+
+message HeartbeatResponse {
+    uint64 tx_id = 1;
+    bool alive = 2;
 }
