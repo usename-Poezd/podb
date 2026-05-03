@@ -1,5 +1,6 @@
 #include "wal/wal_writer.h"
 
+#include <algorithm>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -10,22 +11,30 @@
 
 namespace db {
 
-WalWriter::WalWriter(const std::string &path) : path_(path) {
-  fd_ = ::open(path.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
+WalWriter::WalWriter(const std::string &path)
+    : path_(path), fd_(::open(path.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644)) {
   if (fd_ < 0) {
     throw std::runtime_error("WalWriter: не удалось открыть файл: " + path);
   }
 
-  struct stat st {};
-  if (::fstat(fd_, &st) == 0 && st.st_size > 0) {
+  struct stat stat_buf {};
+  if (::fstat(fd_, &stat_buf) == 0 && stat_buf.st_size > 0) {
     WalReader reader(path);
     const auto records = reader.ReadAll(0);
+    if (reader.HasCorruptedTail()) {
+      const size_t valid_size = reader.ValidOffset();
+      if (::ftruncate(fd_, static_cast<off_t>(valid_size)) != 0) {
+        throw std::runtime_error("WalWriter: не удалось обрезать corrupted tail: " +
+                                 path);
+      }
+      if (::fdatasync(fd_) != 0) {
+        throw std::runtime_error("WalWriter: ошибка fdatasync после truncation");
+      }
+    }
     if (!records.empty()) {
       uint64_t max_lsn = 0;
-      for (const auto &r : records) {
-        if (r.lsn > max_lsn) {
-          max_lsn = r.lsn;
-        }
+      for (const auto &record : records) {
+        max_lsn = std::max(max_lsn, record.lsn);
       }
       current_lsn_ = max_lsn + 1;
     }

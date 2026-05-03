@@ -180,7 +180,7 @@ int main(int argc, char *argv[]) {
       }
     }
 
-    tx_coordinator->ResolveInDoubt();
+    tx_coordinator->ResolveInDoubt(cores);
 
     RecoveryManager::WriteTopologyMeta(data_dir,
       {static_cast<uint32_t>(cores), layout_epoch});

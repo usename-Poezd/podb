@@ -10,19 +10,25 @@
 
 namespace db {
 
-WalReader::WalReader(const std::string &path) : path_(path) {
-  fd_ = ::open(path.c_str(), O_RDONLY);
+namespace {
+
+constexpr size_t kRecordSizeOffset = 4;
+
+}  // namespace
+
+WalReader::WalReader(const std::string &path)
+    : path_(path), fd_(::open(path.c_str(), O_RDONLY)) {
   if (fd_ < 0) {
     throw std::runtime_error("WalReader: не удалось открыть файл: " + path);
   }
 
-  struct stat st {};
-  if (::fstat(fd_, &st) != 0) {
+  struct stat stat_buf {};
+  if (::fstat(fd_, &stat_buf) != 0) {
     ::close(fd_);
     fd_ = -1;
     throw std::runtime_error("WalReader: не удалось получить размер файла: " + path);
   }
-  file_size_ = static_cast<size_t>(st.st_size);
+  file_size_ = static_cast<size_t>(stat_buf.st_size);
 }
 
 WalReader::~WalReader() {
@@ -45,7 +51,7 @@ std::optional<WalRecord> WalReader::Next() {
   }
 
   uint32_t record_size = 0;
-  std::memcpy(&record_size, header.data() + 4, 4);
+  std::memcpy(&record_size, &header[kRecordSizeOffset], sizeof(record_size));
 
   if (record_size < kWalHeaderSize || offset_ + record_size > file_size_) {
     corrupted_tail_ = true;
@@ -85,5 +91,7 @@ std::vector<WalRecord> WalReader::ReadAll(uint64_t min_lsn) {
 }
 
 bool WalReader::HasCorruptedTail() const noexcept { return corrupted_tail_; }
+
+size_t WalReader::ValidOffset() const noexcept { return offset_; }
 
 }  // namespace db

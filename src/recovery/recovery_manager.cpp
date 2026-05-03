@@ -227,7 +227,7 @@ RecoveryManager::RecoverCoordinator(const std::string& data_dir) {
     case WalRecordType::COMMIT_DECISION: {
       TxRecord& tx = state.tx_table[rec.tx_id];
       tx.tx_id = rec.tx_id;
-      tx.snapshot_ts = rec.commit_ts;
+      tx.commit_ts = rec.commit_ts;
       tx.state = TxState::COMMITTED;
       break;
     }
@@ -281,7 +281,7 @@ void RecoveryManager::Repartition(
     for (const auto& storage : old_storages) {
       switch (tx.state) {
       case TxState::COMMITTED:
-        storage->CommitTransaction(tx_id, tx.snapshot_ts);
+        storage->CommitTransaction(tx_id, tx.commit_ts);
         break;
       case TxState::ACTIVE:
       case TxState::PREPARING:

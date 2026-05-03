@@ -26,6 +26,7 @@ enum class TxState : uint8_t {
 struct TxRecord {
   uint64_t tx_id{0};
   uint64_t snapshot_ts{0};
+  uint64_t commit_ts{0};
   TxState state{TxState::ACTIVE};
   uint64_t created_ts{0};
   uint64_t last_heartbeat_ts{0};
@@ -73,7 +74,7 @@ class TxCoordinator {
                           uint64_t next_tx_id, uint64_t next_snapshot_ts);
 
   /// Разрешить in-doubt транзакции после recovery.
-  void ResolveInDoubt();
+  void ResolveInDoubt(int num_cores);
 
  private:
   /// Ожидание завершения финализации на participant cores

@@ -15,6 +15,8 @@ public:
   ~WalReader();
   WalReader(const WalReader &) = delete;
   WalReader &operator=(const WalReader &) = delete;
+  WalReader(WalReader &&) = delete;
+  WalReader &operator=(WalReader &&) = delete;
 
   /// Прочитать следующую запись. nullopt = конец файла или corrupted tail.
   [[nodiscard]] std::optional<WalRecord> Next();
@@ -24,6 +26,9 @@ public:
 
   /// Был ли обнаружен corrupted tail при чтении.
   [[nodiscard]] bool HasCorruptedTail() const noexcept;
+
+  /// Смещение после последней валидной записи.
+  [[nodiscard]] size_t ValidOffset() const noexcept;
 
 private:
   std::string path_;

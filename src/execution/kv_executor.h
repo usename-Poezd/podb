@@ -56,17 +56,18 @@ public:
       break;
     }
     case TaskType::TX_EXECUTE_SET_REQUEST: {
-      if (wal_) {
+      BinaryValue value_copy = request.value;
+      // MVCC запись intent
+      auto result = storage_.WriteIntent(request.key, std::move(request.value), request.tx_id);
+      if (result == WriteIntentResult::OK && wal_) {
         WalRecord rec;
         rec.type = WalRecordType::INTENT;
         rec.tx_id = request.tx_id;
         rec.key = request.key;
-        rec.value = request.value;
+        rec.value = std::move(value_copy);
         rec.is_deleted = false;
         wal_->Append(std::move(rec));
       }
-      // MVCC запись intent
-      auto result = storage_.WriteIntent(request.key, std::move(request.value), request.tx_id);
       std::printf("[Core %d] EXEC TX_SET \"%.20s\" tx=%lu → %s reply→Core %d\n",
                   core_id_, request.key.c_str(), request.tx_id,
                   result == WriteIntentResult::OK ? "OK" : "CONFLICT",

@@ -14,6 +14,8 @@ public:
   ~WalWriter();
   WalWriter(const WalWriter &) = delete;
   WalWriter &operator=(const WalWriter &) = delete;
+  WalWriter(WalWriter &&) = delete;
+  WalWriter &operator=(WalWriter &&) = delete;
 
   /// Добавить запись в WAL. Присваивает LSN автоматически.
   void Append(WalRecord record);

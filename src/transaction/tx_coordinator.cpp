@@ -247,6 +247,7 @@ void TxCoordinator::HandlePrepareResponse(
       wal_->Sync();
     }
     tx_it->second.state = TxState::COMMITTED;
+    tx_it->second.commit_ts = commit_ts;
     pending_finalize.is_commit = true;
     pending_finalizes_[task.tx_id] = pending_finalize;
 
@@ -480,7 +481,7 @@ void TxCoordinator::ReapStaleTransactions() {
       finalize_task.tx_id = tx_id;
       finalize_task.reply_to_core = 0;
       if (pending_finalize_it->second.is_commit) {
-        finalize_task.commit_ts = tx_it->second.snapshot_ts;
+        finalize_task.commit_ts = tx_it->second.commit_ts;
       }
       router_.SendToCore(core, std::move(finalize_task));
     }
@@ -520,31 +521,39 @@ void TxCoordinator::LoadRecoveredState(
   next_snapshot_ts_ = next_snapshot_ts;
 }
 
-void TxCoordinator::ResolveInDoubt() {
+void TxCoordinator::ResolveInDoubt(int num_cores) {
   for (auto& [tx_id, record] : tx_table_) {
+    std::vector<int> target_cores;
     if (record.participant_cores.empty()) {
-      continue;
+      target_cores.reserve(num_cores);
+      for (int core_id = 0; core_id < num_cores; ++core_id) {
+        target_cores.push_back(core_id);
+        record.participant_cores.insert(core_id);
+      }
+    } else {
+      target_cores.assign(record.participant_cores.begin(), record.participant_cores.end());
     }
 
     if (record.state == TxState::COMMITTED) {
       PendingFinalize pf;
-      pf.client_request_id = 0;
+      pf.client_request_id = kReaperSentinel;
       pf.tx_id = tx_id;
-      pf.remaining = static_cast<int>(record.participant_cores.size());
+      pf.remaining = static_cast<int>(target_cores.size());
       pf.is_commit = true;
       pf.client_response_type = TaskType::TX_COMMIT_RESPONSE;
       pending_finalizes_[tx_id] = pf;
 
-      for (int core : record.participant_cores) {
+      for (int core : target_cores) {
         Task finalize_task;
         finalize_task.type = TaskType::TX_FINALIZE_COMMIT_REQUEST;
         finalize_task.tx_id = tx_id;
-        finalize_task.commit_ts = record.snapshot_ts;
+        finalize_task.commit_ts = record.commit_ts;
         finalize_task.reply_to_core = 0;
         router_.SendToCore(core, std::move(finalize_task));
       }
     } else if (record.state == TxState::PREPARING ||
-               record.state == TxState::ACTIVE) {
+               record.state == TxState::ACTIVE ||
+               record.state == TxState::ABORTED) {
       record.state = TxState::ABORTED;
       if (wal_) {
         WalRecord wal_rec;
@@ -554,14 +563,14 @@ void TxCoordinator::ResolveInDoubt() {
       }
 
       PendingFinalize pf;
-      pf.client_request_id = 0;
+      pf.client_request_id = kReaperSentinel;
       pf.tx_id = tx_id;
-      pf.remaining = static_cast<int>(record.participant_cores.size());
+      pf.remaining = static_cast<int>(target_cores.size());
       pf.is_commit = false;
       pf.client_response_type = TaskType::TX_COMMIT_RESPONSE;
       pending_finalizes_[tx_id] = pf;
 
-      for (int core : record.participant_cores) {
+      for (int core : target_cores) {
         Task finalize_task;
         finalize_task.type = TaskType::TX_FINALIZE_ABORT_REQUEST;
         finalize_task.tx_id = tx_id;

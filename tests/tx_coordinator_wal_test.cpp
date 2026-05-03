@@ -224,17 +224,41 @@ TEST_F(TxCoordinatorWalTest, ResolveInDoubt_CommittedTx_SendsFinalize) {
   recovered[20] = TxRecord{
       .tx_id = 20,
       .snapshot_ts = 42,
+      .commit_ts = 4242,
       .state = TxState::COMMITTED,
       .participant_cores = {0},
   };
 
   coordinator_->LoadRecoveredState(std::move(recovered), 100, 200);
-  coordinator_->ResolveInDoubt();
+  coordinator_->ResolveInDoubt(1);
 
   ASSERT_EQ(forwarded_tasks_.size(), 1U);
   EXPECT_EQ(forwarded_tasks_[0].type, TaskType::TX_FINALIZE_COMMIT_REQUEST);
   EXPECT_EQ(forwarded_tasks_[0].tx_id, 20U);
+  EXPECT_EQ(forwarded_tasks_[0].commit_ts, 4242U);
   EXPECT_EQ(forwarded_tasks_[0].reply_to_core, 0);
+  ASSERT_TRUE(coordinator_->pending_finalizes_.contains(20));
+  EXPECT_EQ(coordinator_->pending_finalizes_[20].client_request_id,
+            TxCoordinator::kReaperSentinel);
+}
+
+TEST_F(TxCoordinatorWalTest, ResolveInDoubt_EmptyParticipants_BroadcastsUsingAllCores) {
+  std::unordered_map<uint64_t, TxRecord> recovered;
+  recovered[21] = TxRecord{
+      .tx_id = 21,
+      .snapshot_ts = 7,
+      .commit_ts = 77,
+      .state = TxState::COMMITTED,
+      .participant_cores = {},
+  };
+
+  coordinator_->LoadRecoveredState(std::move(recovered), 100, 200);
+  coordinator_->ResolveInDoubt(1);
+
+  ASSERT_EQ(forwarded_tasks_.size(), 1U);
+  EXPECT_EQ(forwarded_tasks_[0].type, TaskType::TX_FINALIZE_COMMIT_REQUEST);
+  EXPECT_EQ(forwarded_tasks_[0].tx_id, 21U);
+  EXPECT_EQ(forwarded_tasks_[0].commit_ts, 77U);
 }
 
 }  // namespace

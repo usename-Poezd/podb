@@ -204,7 +204,8 @@ TEST_F(RecoveryTest, RecoverCoordinator_BeginAndCommit) {
 
   ASSERT_TRUE(state.tx_table.contains(1));
   EXPECT_EQ(state.tx_table.at(1).state, TxState::COMMITTED);
-  EXPECT_EQ(state.tx_table.at(1).snapshot_ts, 100U);
+  EXPECT_EQ(state.tx_table.at(1).snapshot_ts, 10U);
+  EXPECT_EQ(state.tx_table.at(1).commit_ts, 100U);
 }
 
 TEST_F(RecoveryTest, RecoverCoordinator_BeginAndAbort) {

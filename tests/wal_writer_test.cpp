@@ -161,6 +161,43 @@ TEST_F(WalWriterTest, ReopenExistingWal_ContinuesLsn) {
   }
 }
 
+TEST_F(WalWriterTest, ReopenExistingWal_TruncatesCorruptedTailBeforeAppend) {
+  {
+    WalWriter writer(wal_path_);
+    for (int i = 0; i < 3; ++i) {
+      WalRecord r;
+      r.type = WalRecordType::TX_BEGIN;
+      r.tx_id = static_cast<uint64_t>(i + 1);
+      writer.Append(r);
+    }
+  }
+
+  struct stat st {};
+  ASSERT_EQ(::stat(wal_path_.c_str(), &st), 0);
+  ASSERT_EQ(::truncate(wal_path_.c_str(), st.st_size - 8), 0);
+
+  {
+    WalWriter writer(wal_path_);
+    EXPECT_EQ(writer.CurrentLsn(), 3u);
+
+    WalRecord r;
+    r.type = WalRecordType::TX_BEGIN;
+    r.tx_id = 99;
+    writer.Append(r);
+  }
+
+  WalReader reader(wal_path_);
+  const auto records = reader.ReadAll();
+  ASSERT_EQ(records.size(), 3u);
+  EXPECT_FALSE(reader.HasCorruptedTail());
+  EXPECT_EQ(records[0].tx_id, 1u);
+  EXPECT_EQ(records[1].tx_id, 2u);
+  EXPECT_EQ(records[2].tx_id, 99u);
+  EXPECT_EQ(records[0].lsn, 1u);
+  EXPECT_EQ(records[1].lsn, 2u);
+  EXPECT_EQ(records[2].lsn, 3u);
+}
+
 TEST_F(WalWriterTest, LargeIntentPayload) {
   WalRecord r;
   r.type = WalRecordType::INTENT;

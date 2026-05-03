@@ -203,5 +203,21 @@ TEST_F(KvExecutorWalTest, MultipleOps_CorrectWalOrder) {
   EXPECT_TRUE(records[1].lsn < records[2].lsn);
 }
 
+TEST_F(KvExecutorWalTest, TxSet_WriteConflict_DoesNotWritePhantomIntent) {
+  ASSERT_EQ(storage_.WriteIntent("foo", MakeValue("first"), 1), WriteIntentResult::OK);
+
+  Task req;
+  req.type = TaskType::TX_EXECUTE_SET_REQUEST;
+  req.key = "foo";
+  req.value = MakeValue("second");
+  req.tx_id = 2;
+
+  const auto resp = executor_->Execute(std::move(req));
+  EXPECT_FALSE(resp.success);
+
+  const auto records = ReadWalRecords();
+  EXPECT_TRUE(records.empty());
+}
+
 }  // namespace
 }  // namespace db
