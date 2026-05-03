@@ -4,6 +4,7 @@ target_include_directories(db_project_headers INTERFACE ${CMAKE_CURRENT_SOURCE_D
 add_subdirectory(api)
 add_subdirectory(core)
 add_subdirectory(storage)
+add_subdirectory(wal)
 add_subdirectory(execution)
 add_subdirectory(async)
 add_subdirectory(router)

@@ -172,6 +172,89 @@ TEST_F(StorageMvccTest, AbortTransaction_MultipleKeys) {
   EXPECT_FALSE(storage_.MvccGet("b", 100, 2).found);
 }
 
+TEST_F(StorageMvccTest, ForEachLatestCommitted_ReturnsOnlyCommitted) {
+  ASSERT_EQ(storage_.WriteIntent("a", MakeValue("va"), 1), WriteIntentResult::OK);
+  storage_.CommitTransaction(1, 50);
+  ASSERT_EQ(storage_.WriteIntent("b", MakeValue("vb"), 2), WriteIntentResult::OK);
+
+  int count = 0;
+  storage_.ForEachLatestCommitted([&](const std::string &key, const BinaryValue &,
+                                       uint64_t, bool) {
+    EXPECT_EQ(key, "a");
+    count++;
+  });
+  EXPECT_EQ(count, 1);
+}
+
+TEST_F(StorageMvccTest, ForEachLatestCommitted_LatestPerKey) {
+  ASSERT_EQ(storage_.WriteIntent("k", MakeValue("v1"), 1), WriteIntentResult::OK);
+  storage_.CommitTransaction(1, 50);
+  ASSERT_EQ(storage_.WriteIntent("k", MakeValue("v2"), 2), WriteIntentResult::OK);
+  storage_.CommitTransaction(2, 100);
+
+  storage_.ForEachLatestCommitted([&](const std::string &, const BinaryValue &value,
+                                       uint64_t ts, bool) {
+    EXPECT_EQ(ValueToStr(value), "v2");
+    EXPECT_EQ(ts, 100U);
+  });
+}
+
+TEST_F(StorageMvccTest, ForEachLatestCommitted_EmptyStorage) {
+  int count = 0;
+  storage_.ForEachLatestCommitted([&](const std::string &, const BinaryValue &,
+                                       uint64_t, bool) { count++; });
+  EXPECT_EQ(count, 0);
+}
+
+TEST_F(StorageMvccTest, RestoreCommitted_InsertsVersion) {
+  storage_.RestoreCommitted("k", MakeValue("restored"), 50, false);
+
+  const auto result = storage_.MvccGet("k", 100, 0);
+  ASSERT_TRUE(result.found);
+  EXPECT_EQ(ValueToStr(result.value), "restored");
+}
+
+TEST_F(StorageMvccTest, Clear_EmptiesEverything) {
+  ASSERT_EQ(storage_.WriteIntent("k", MakeValue("v"), 1), WriteIntentResult::OK);
+  storage_.CommitTransaction(1, 50);
+
+  storage_.Clear();
+
+  EXPECT_FALSE(storage_.MvccGet("k", 100, 0).found);
+  int count = 0;
+  storage_.ForEachLatestCommitted([&](const std::string &, const BinaryValue &,
+                                       uint64_t, bool) { count++; });
+  EXPECT_EQ(count, 0);
+}
+
+TEST_F(StorageMvccTest, SnapshotRoundtrip) {
+  ASSERT_EQ(storage_.WriteIntent("a", MakeValue("va"), 1), WriteIntentResult::OK);
+  ASSERT_EQ(storage_.WriteIntent("b", MakeValue("vb"), 1), WriteIntentResult::OK);
+  storage_.CommitTransaction(1, 50);
+
+  struct Entry {
+    std::string key;
+    BinaryValue value;
+    uint64_t commit_ts;
+    bool is_deleted;
+  };
+  std::vector<Entry> entries;
+  storage_.ForEachLatestCommitted(
+      [&](const std::string &key, const BinaryValue &value, uint64_t ts, bool del) {
+        entries.push_back({key, value, ts, del});
+      });
+
+  storage_.Clear();
+  EXPECT_FALSE(storage_.MvccGet("a", 100, 0).found);
+
+  for (auto &e : entries) {
+    storage_.RestoreCommitted(e.key, std::move(e.value), e.commit_ts, e.is_deleted);
+  }
+
+  EXPECT_TRUE(storage_.MvccGet("a", 100, 0).found);
+  EXPECT_TRUE(storage_.MvccGet("b", 100, 0).found);
+}
+
 TEST_F(StorageMvccTest, ValidatePrepare_IntentsExist_Success) {
   ASSERT_EQ(storage_.WriteIntent("k", MakeValue("val"), 1), WriteIntentResult::OK);
 

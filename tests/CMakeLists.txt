@@ -25,3 +25,7 @@ target_link_libraries(kv_executor_test PRIVATE
     db_storage
 )
 gtest_discover_tests(kv_executor_test TEST_PREFIX "kv_executor.")
+
+add_executable(wal_record_test wal_record_test.cpp)
+target_link_libraries(wal_record_test PRIVATE GTest::gtest_main db_wal)
+gtest_discover_tests(wal_record_test TEST_PREFIX "wal_record.")

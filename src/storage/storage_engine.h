@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <optional>
 #include <ranges>
 #include <string>
@@ -167,6 +168,37 @@ public:
   [[nodiscard]] const std::unordered_set<std::string> *GetReadSet(uint64_t tx_id) const {
     auto it = tx_read_set_.find(tx_id);
     return it != tx_read_set_.end() ? &it->second : nullptr;
+  }
+
+  void ForEachLatestCommitted(
+      std::function<void(const std::string &key, const BinaryValue &value,
+                         uint64_t commit_ts, bool is_deleted)> callback) const {
+    for (const auto &[key, chain] : versions_) {
+      for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+        if (!it->is_intent) {
+          callback(key, it->value, it->commit_ts, it->is_deleted);
+          break;
+        }
+      }
+    }
+  }
+
+  void RestoreCommitted(const std::string &key, BinaryValue value,
+                        uint64_t commit_ts, bool is_deleted) {
+    versions_[key].push_back({
+        .commit_ts = commit_ts,
+        .value = std::move(value),
+        .tx_id = 0,
+        .is_intent = false,
+        .is_deleted = is_deleted,
+    });
+  }
+
+  void Clear() {
+    data_.clear();
+    versions_.clear();
+    tx_intents_.clear();
+    tx_read_set_.clear();
   }
 
   [[nodiscard]] PrepareResult ValidatePrepare(uint64_t tx_id) const {
