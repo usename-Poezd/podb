@@ -17,9 +17,8 @@ int Router::RouteKey(const std::string &key) const noexcept {
 }
 
 void Router::RouteTask(Task task) {
-  // Finalize задачи исполняются локально — они уже на правильном core
-  if (task.IsTxFinalize()) {
-    std::printf("[Core %d] ROUT %s tx=%lu → local (finalize)\n", local_core_id_,
+  if (task.IsTxFinalize() || task.IsTxPrepare()) {
+    std::printf("[Core %d] ROUT %s tx=%lu → local (direct-to-core)\n", local_core_id_,
                 TaskTypeName(task.type), task.tx_id);
     local_execute_(std::move(task));
     return;

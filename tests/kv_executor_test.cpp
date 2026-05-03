@@ -157,5 +157,47 @@ TEST_F(KvExecutorTest, FinalizeAbort_RemovesIntents) {
   EXPECT_FALSE(storage_.MvccGet("k", 100, 99).found);
 }
 
+TEST_F(KvExecutorTest, Prepare_IntentsAlive_VotesYes) {
+  ASSERT_EQ(storage_.WriteIntent("k", MakeValue("val"), 5), WriteIntentResult::OK);
+
+  Task req;
+  req.type = TaskType::TX_PREPARE_REQUEST;
+  req.tx_id = 5;
+  req.reply_to_core = 0;
+
+  const auto resp = executor_.Execute(std::move(req));
+
+  EXPECT_EQ(resp.type, TaskType::TX_PREPARE_RESPONSE);
+  EXPECT_TRUE(resp.success);
+  EXPECT_TRUE(resp.error_message.empty());
+}
+
+TEST_F(KvExecutorTest, Prepare_NoIntents_VotesNo) {
+  Task req;
+  req.type = TaskType::TX_PREPARE_REQUEST;
+  req.tx_id = 5;
+  req.reply_to_core = 0;
+
+  const auto resp = executor_.Execute(std::move(req));
+
+  EXPECT_EQ(resp.type, TaskType::TX_PREPARE_RESPONSE);
+  EXPECT_FALSE(resp.success);
+  EXPECT_NE(resp.error_message.find("no_intents"), std::string::npos);
+}
+
+TEST_F(KvExecutorTest, FinalizeAbort_ReturnsProperResponseType) {
+  ASSERT_EQ(storage_.WriteIntent("k", MakeValue("val"), 7), WriteIntentResult::OK);
+
+  Task req;
+  req.type = TaskType::TX_FINALIZE_ABORT_REQUEST;
+  req.tx_id = 7;
+  req.reply_to_core = 0;
+
+  const auto resp = executor_.Execute(std::move(req));
+
+  EXPECT_EQ(resp.type, TaskType::TX_FINALIZE_ABORT_RESPONSE);
+  EXPECT_TRUE(resp.success);
+}
+
 }  // namespace
 }  // namespace db

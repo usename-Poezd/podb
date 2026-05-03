@@ -30,4 +30,10 @@ enum class WriteIntentResult : uint8_t {
   WRITE_CONFLICT,             // Конфликт: другая транзакция уже имеет intent на этот ключ
 };
 
+/// Результат OCC валидации при PREPARE
+struct PrepareResult {
+  bool can_commit{false};    // true = все intents живы и валидны
+  std::string reason;        // Причина отказа (пусто если can_commit)
+};
+
 }  // namespace db

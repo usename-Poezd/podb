@@ -101,31 +101,30 @@ void TxCoordinator::HandleCommit(Task& task) {
     return;
   }
 
-  tx_it->second.state = TxState::COMMITTED;
   const auto& participants = tx_it->second.participant_cores;
 
   if (participants.empty()) {
+    tx_it->second.state = TxState::COMMITTED;
     response.success = true;
     SendResponse(task.request_id, std::move(response));
     return;
   }
 
-  const uint64_t commit_ts = next_snapshot_ts_++;
+  tx_it->second.state = TxState::PREPARING;
 
-  PendingFinalize pending_finalize;
-  pending_finalize.client_request_id = task.request_id;
-  pending_finalize.tx_id = task.tx_id;
-  pending_finalize.remaining = static_cast<int>(participants.size());
-  pending_finalize.is_commit = true;
-  pending_finalizes_[task.tx_id] = pending_finalize;
+  PendingPrepare pending_prepare;
+  pending_prepare.client_request_id = task.request_id;
+  pending_prepare.tx_id = task.tx_id;
+  pending_prepare.remaining = static_cast<int>(participants.size());
+  pending_prepares_[task.tx_id] = pending_prepare;
 
   for (int core : participants) {
-    Task finalize_task;
-    finalize_task.type = TaskType::TX_FINALIZE_COMMIT_REQUEST;
-    finalize_task.tx_id = task.tx_id;
-    finalize_task.commit_ts = commit_ts;
-    finalize_task.reply_to_core = 0;
-    router_.SendToCore(core, std::move(finalize_task));
+    Task prepare_task;
+    prepare_task.type = TaskType::TX_PREPARE_REQUEST;
+    prepare_task.tx_id = task.tx_id;
+    prepare_task.snapshot_ts = tx_it->second.snapshot_ts;
+    prepare_task.reply_to_core = 0;
+    router_.SendToCore(core, std::move(prepare_task));
   }
 }
 
@@ -163,6 +162,7 @@ void TxCoordinator::HandleRollback(Task& task) {
   pending_finalize.tx_id = task.tx_id;
   pending_finalize.remaining = static_cast<int>(participants.size());
   pending_finalize.is_commit = false;
+  pending_finalize.client_response_type = TaskType::TX_ROLLBACK_RESPONSE;
   pending_finalizes_[task.tx_id] = pending_finalize;
 
   for (int core : participants) {
@@ -172,6 +172,73 @@ void TxCoordinator::HandleRollback(Task& task) {
     finalize_task.reply_to_core = 0;
     router_.SendToCore(core, std::move(finalize_task));
   }
+}
+
+void TxCoordinator::HandlePrepareResponse(
+    Task task) {  // NOLINT(performance-unnecessary-value-param)
+  auto pending_prepare_it = pending_prepares_.find(task.tx_id);
+  if (pending_prepare_it == pending_prepares_.end()) {
+    return;
+  }
+
+  if (!task.success) {
+    pending_prepare_it->second.any_no = true;
+    if (pending_prepare_it->second.first_error.empty()) {
+      pending_prepare_it->second.first_error = std::move(task.error_message);
+    }
+  }
+
+  pending_prepare_it->second.remaining--;
+  if (pending_prepare_it->second.remaining > 0) {
+    return;
+  }
+
+  auto tx_it = tx_table_.find(task.tx_id);
+  if (tx_it == tx_table_.end()) {
+    pending_prepares_.erase(pending_prepare_it);
+    return;
+  }
+
+  const auto& participants = tx_it->second.participant_cores;
+  PendingFinalize pending_finalize;
+  pending_finalize.client_request_id = pending_prepare_it->second.client_request_id;
+  pending_finalize.tx_id = pending_prepare_it->second.tx_id;
+  pending_finalize.remaining = static_cast<int>(participants.size());
+  pending_finalize.client_response_type = TaskType::TX_COMMIT_RESPONSE;
+
+  if (!pending_prepare_it->second.any_no) {
+    tx_it->second.state = TxState::COMMITTED;
+    const uint64_t commit_ts = next_snapshot_ts_++;
+    pending_finalize.is_commit = true;
+    pending_finalizes_[task.tx_id] = pending_finalize;
+
+    for (int core : participants) {
+      Task finalize_task;
+      finalize_task.type = TaskType::TX_FINALIZE_COMMIT_REQUEST;
+      finalize_task.tx_id = task.tx_id;
+      finalize_task.commit_ts = commit_ts;
+      finalize_task.reply_to_core = 0;
+      router_.SendToCore(core, std::move(finalize_task));
+    }
+  } else {
+    tx_it->second.state = TxState::ABORTED;
+    pending_finalize.is_commit = false;
+    pending_finalize.error_message =
+        pending_prepare_it->second.first_error.empty()
+            ? "prepare_rejected"
+            : std::move(pending_prepare_it->second.first_error);
+    pending_finalizes_[task.tx_id] = pending_finalize;
+
+    for (int core : participants) {
+      Task finalize_task;
+      finalize_task.type = TaskType::TX_FINALIZE_ABORT_REQUEST;
+      finalize_task.tx_id = task.tx_id;
+      finalize_task.reply_to_core = 0;
+      router_.SendToCore(core, std::move(finalize_task));
+    }
+  }
+
+  pending_prepares_.erase(pending_prepare_it);
 }
 
 void TxCoordinator::HandleHeartbeat(Task& task) {
@@ -209,11 +276,10 @@ void TxCoordinator::HandleFinalizeResponse(
   if (pending_finalize_it->second.remaining <= 0) {
     Task response;
     response.tx_id = pending_finalize_it->second.tx_id;
-    response.success = true;
-    if (pending_finalize_it->second.is_commit) {
-      response.type = TaskType::TX_COMMIT_RESPONSE;
-    } else {
-      response.type = TaskType::TX_ROLLBACK_RESPONSE;
+    response.type = pending_finalize_it->second.client_response_type;
+    response.success = pending_finalize_it->second.error_message.empty();
+    if (!response.success) {
+      response.error_message = pending_finalize_it->second.error_message;
     }
 
     const uint64_t request_id = pending_finalize_it->second.client_request_id;

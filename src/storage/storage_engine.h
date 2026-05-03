@@ -77,6 +77,7 @@ public:
       }
 
       if (version.commit_ts <= snapshot_ts.Value()) {
+        tx_read_set_[tx_id.Value()].insert(key);
         return {.found = true, .value = version.value, .is_deleted = version.is_deleted};
       }
     }
@@ -133,6 +134,7 @@ public:
     }
 
     tx_intents_.erase(tx_it);
+    tx_read_set_.erase(tx_id.Value());
   }
 
   /// Финализация abort: удалить все intents транзакции из version chains.
@@ -159,6 +161,30 @@ public:
     }
 
     tx_intents_.erase(tx_it);
+    tx_read_set_.erase(tx_id);
+  }
+
+  [[nodiscard]] const std::unordered_set<std::string> *GetReadSet(uint64_t tx_id) const {
+    auto it = tx_read_set_.find(tx_id);
+    return it != tx_read_set_.end() ? &it->second : nullptr;
+  }
+
+  [[nodiscard]] PrepareResult ValidatePrepare(uint64_t tx_id) const {
+    auto it = tx_intents_.find(tx_id);
+    if (it == tx_intents_.end() || it->second.empty()) {
+      return {false, "no_intents"};
+    }
+    for (const auto &key : it->second) {
+      auto vit = versions_.find(key);
+      if (vit == versions_.end() || vit->second.empty()) {
+        return {false, "intent_missing:" + key};
+      }
+      const auto &top = vit->second.back();
+      if (!top.is_intent || top.tx_id != tx_id) {
+        return {false, "intent_replaced:" + key};
+      }
+    }
+    return {true, {}};
   }
 
 private:
@@ -167,6 +193,7 @@ private:
   std::unordered_map<std::string, std::vector<VersionedValue>> versions_;
   // Индекс: tx_id -> набор ключей с intents для быстрого commit/abort.
   std::unordered_map<uint64_t, std::unordered_set<std::string>> tx_intents_;
+  mutable std::unordered_map<uint64_t, std::unordered_set<std::string>> tx_read_set_;
 };
 
 }  // namespace db

@@ -82,12 +82,22 @@ public:
       response.success = true;
       break;
     }
+    case TaskType::TX_PREPARE_REQUEST: {
+      auto result = storage_.ValidatePrepare(request.tx_id);
+      std::printf("[Core %d] EXEC PREPARE tx=%lu → %s\n",
+                  core_id_, request.tx_id,
+                  result.can_commit ? "YES" : "NO");
+      response.type = TaskType::TX_PREPARE_RESPONSE;
+      response.tx_id = request.tx_id;
+      response.success = result.can_commit;
+      if (!result.can_commit)
+        response.error_message = std::move(result.reason);
+      break;
+    }
     case TaskType::TX_FINALIZE_ABORT_REQUEST: {
-      // Финализация abort: удалить intents
       storage_.AbortTransaction(request.tx_id);
       std::printf("[Core %d] EXEC FIN_ABORT tx=%lu\n", core_id_, request.tx_id);
-      // Нет response type для abort — fire-and-forget
-      response.type = TaskType::TX_EXECUTE_RESPONSE;
+      response.type = TaskType::TX_FINALIZE_ABORT_RESPONSE;
       response.tx_id = request.tx_id;
       response.success = true;
       break;

@@ -172,5 +172,102 @@ TEST_F(StorageMvccTest, AbortTransaction_MultipleKeys) {
   EXPECT_FALSE(storage_.MvccGet("b", 100, 2).found);
 }
 
+TEST_F(StorageMvccTest, ValidatePrepare_IntentsExist_Success) {
+  ASSERT_EQ(storage_.WriteIntent("k", MakeValue("val"), 1), WriteIntentResult::OK);
+
+  const auto result = storage_.ValidatePrepare(1);
+
+  EXPECT_TRUE(result.can_commit);
+  EXPECT_TRUE(result.reason.empty());
+}
+
+TEST_F(StorageMvccTest, ValidatePrepare_MultipleKeys_Success) {
+  ASSERT_EQ(storage_.WriteIntent("a", MakeValue("va"), 1), WriteIntentResult::OK);
+  ASSERT_EQ(storage_.WriteIntent("b", MakeValue("vb"), 1), WriteIntentResult::OK);
+
+  const auto result = storage_.ValidatePrepare(1);
+
+  EXPECT_TRUE(result.can_commit);
+  EXPECT_TRUE(result.reason.empty());
+}
+
+TEST_F(StorageMvccTest, ValidatePrepare_NoIntents_Fails) {
+  const auto result = storage_.ValidatePrepare(99);
+
+  EXPECT_FALSE(result.can_commit);
+  EXPECT_NE(result.reason.find("no_intents"), std::string::npos);
+}
+
+TEST_F(StorageMvccTest, ValidatePrepare_AfterAbort_Fails) {
+  ASSERT_EQ(storage_.WriteIntent("k", MakeValue("val"), 1), WriteIntentResult::OK);
+  storage_.AbortTransaction(1);
+
+  const auto result = storage_.ValidatePrepare(1);
+
+  EXPECT_FALSE(result.can_commit);
+  EXPECT_NE(result.reason.find("no_intents"), std::string::npos);
+}
+
+TEST_F(StorageMvccTest, ReadSetTracking_CommittedReadTracksKey) {
+  ASSERT_EQ(storage_.WriteIntent("k", MakeValue("v"), 1), WriteIntentResult::OK);
+  storage_.CommitTransaction(1, 50);
+
+  storage_.MvccGet("k", 100, 2);
+
+  const auto *rs = storage_.GetReadSet(2);
+  ASSERT_NE(rs, nullptr);
+  EXPECT_TRUE(rs->contains("k"));
+}
+
+TEST_F(StorageMvccTest, ReadSetTracking_OwnIntentNotTracked) {
+  ASSERT_EQ(storage_.WriteIntent("k", MakeValue("v"), 1), WriteIntentResult::OK);
+
+  storage_.MvccGet("k", 100, 1);
+
+  const auto *rs = storage_.GetReadSet(1);
+  EXPECT_TRUE(rs == nullptr || !rs->contains("k"));
+}
+
+TEST_F(StorageMvccTest, ReadSetTracking_MissNotTracked) {
+  storage_.MvccGet("missing", 100, 1);
+
+  const auto *rs = storage_.GetReadSet(1);
+  EXPECT_TRUE(rs == nullptr || rs->empty());
+}
+
+TEST_F(StorageMvccTest, ReadSetTracking_CommitCleansUp) {
+  ASSERT_EQ(storage_.WriteIntent("k", MakeValue("v"), 1), WriteIntentResult::OK);
+  storage_.CommitTransaction(1, 50);
+  storage_.MvccGet("k", 100, 2);
+  ASSERT_NE(storage_.GetReadSet(2), nullptr);
+
+  ASSERT_EQ(storage_.WriteIntent("x", MakeValue("x"), 2), WriteIntentResult::OK);
+  storage_.CommitTransaction(2, 200);
+
+  EXPECT_EQ(storage_.GetReadSet(2), nullptr);
+}
+
+TEST_F(StorageMvccTest, ReadSetTracking_AbortCleansUp) {
+  ASSERT_EQ(storage_.WriteIntent("k", MakeValue("v"), 1), WriteIntentResult::OK);
+  storage_.CommitTransaction(1, 50);
+  storage_.MvccGet("k", 100, 2);
+  ASSERT_NE(storage_.GetReadSet(2), nullptr);
+
+  ASSERT_EQ(storage_.WriteIntent("x", MakeValue("x"), 2), WriteIntentResult::OK);
+  storage_.AbortTransaction(2);
+
+  EXPECT_EQ(storage_.GetReadSet(2), nullptr);
+}
+
+TEST_F(StorageMvccTest, ValidatePrepare_AfterCommit_Fails) {
+  ASSERT_EQ(storage_.WriteIntent("k", MakeValue("val"), 1), WriteIntentResult::OK);
+  storage_.CommitTransaction(1, 100);
+
+  const auto result = storage_.ValidatePrepare(1);
+
+  EXPECT_FALSE(result.can_commit);
+  EXPECT_NE(result.reason.find("no_intents"), std::string::npos);
+}
+
 }  // namespace
 }  // namespace db

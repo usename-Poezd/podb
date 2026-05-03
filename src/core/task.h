@@ -27,6 +27,9 @@ enum class TaskType : uint8_t {
   TX_FINALIZE_COMMIT_REQUEST = 21,   // Запрос на финализацию commit на participant core
   TX_FINALIZE_COMMIT_RESPONSE = 22,  // Ответ о завершении commit финализации
   TX_FINALIZE_ABORT_REQUEST = 23,    // Запрос на финализацию abort на participant core
+  TX_PREPARE_REQUEST = 24,           // OCC validation запрос на participant core
+  TX_PREPARE_RESPONSE = 25,          // Голос участника (YES/NO) обратно координатору
+  TX_FINALIZE_ABORT_RESPONSE = 26,   // Ack финализации abort (замена TX_EXECUTE_RESPONSE хака)
 };
 
 inline const char *TaskTypeName(TaskType t) noexcept {
@@ -67,6 +70,12 @@ inline const char *TaskTypeName(TaskType t) noexcept {
     return "TXFC←";
   case TaskType::TX_FINALIZE_ABORT_REQUEST:
     return "TXFA";
+  case TaskType::TX_PREPARE_REQUEST:
+    return "TXPR";
+  case TaskType::TX_PREPARE_RESPONSE:
+    return "TXPR←";
+  case TaskType::TX_FINALIZE_ABORT_RESPONSE:
+    return "TXFA←";
   }
   return "???";
 }
@@ -102,7 +111,8 @@ struct Task {
            type == TaskType::TX_ROLLBACK_REQUEST ||
            type == TaskType::TX_HEARTBEAT_REQUEST ||
            type == TaskType::TX_FINALIZE_COMMIT_REQUEST ||
-           type == TaskType::TX_FINALIZE_ABORT_REQUEST;
+           type == TaskType::TX_FINALIZE_ABORT_REQUEST ||
+           type == TaskType::TX_PREPARE_REQUEST;
   }
 
   bool IsResponse() const noexcept {
@@ -112,7 +122,9 @@ struct Task {
            type == TaskType::TX_COMMIT_RESPONSE ||
            type == TaskType::TX_ROLLBACK_RESPONSE ||
            type == TaskType::TX_HEARTBEAT_RESPONSE ||
-           type == TaskType::TX_FINALIZE_COMMIT_RESPONSE;
+           type == TaskType::TX_FINALIZE_COMMIT_RESPONSE ||
+           type == TaskType::TX_PREPARE_RESPONSE ||
+           type == TaskType::TX_FINALIZE_ABORT_RESPONSE;
   }
 
   /// Транзакционные control-операции (обрабатываются TxCoordinator на Core 0)
@@ -136,9 +148,17 @@ struct Task {
            type == TaskType::TX_FINALIZE_ABORT_REQUEST;
   }
 
-  /// Ответ на финализацию — маршрутизируется в TxCoordinator, не в GrpcHandler
+  bool IsTxPrepare() const noexcept {
+    return type == TaskType::TX_PREPARE_REQUEST;
+  }
+
+  bool IsTxPrepareResponse() const noexcept {
+    return type == TaskType::TX_PREPARE_RESPONSE;
+  }
+
   bool IsTxFinalizeResponse() const noexcept {
-    return type == TaskType::TX_FINALIZE_COMMIT_RESPONSE;
+    return type == TaskType::TX_FINALIZE_COMMIT_RESPONSE ||
+           type == TaskType::TX_FINALIZE_ABORT_RESPONSE;
   }
 
   const char *OpName() const noexcept {
@@ -169,7 +189,11 @@ struct Task {
     case TaskType::TX_FINALIZE_COMMIT_RESPONSE:
       return "FIN_COMMIT";
     case TaskType::TX_FINALIZE_ABORT_REQUEST:
+    case TaskType::TX_FINALIZE_ABORT_RESPONSE:
       return "FIN_ABORT";
+    case TaskType::TX_PREPARE_REQUEST:
+    case TaskType::TX_PREPARE_RESPONSE:
+      return "PREPARE";
     }
     return "???";
   }

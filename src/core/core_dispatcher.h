@@ -12,9 +12,9 @@ public:
       : router_(router), handler_(handler), tx_coordinator_(tx_coordinator) {}
 
   void Dispatch(Task task) {
-    if (task.IsTxFinalizeResponse() ||
-        (task.type == TaskType::TX_EXECUTE_RESPONSE && task.request_id == 0 &&
-         task.tx_id != 0)) {
+    if (task.IsTxPrepareResponse()) {
+      tx_coordinator_.HandlePrepareResponse(std::move(task));
+    } else if (task.IsTxFinalizeResponse()) {
       tx_coordinator_.HandleFinalizeResponse(std::move(task));
     } else if (task.IsResponse()) {
       handler_.ResumeCoroutine(task.request_id, std::move(task));

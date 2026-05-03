@@ -13,6 +13,7 @@ namespace db {
 /// Состояние транзакции
 enum class TxState : uint8_t {
   ACTIVE,
+  PREPARING,  // PREPARE разослан, ожидаем голоса участников
   COMMITTED,
   ABORTED,
 };
@@ -51,6 +52,9 @@ class TxCoordinator {
   /// Обработка ответов финализации от participant cores.
   void HandleFinalizeResponse(Task task);  // NOLINT(performance-unnecessary-value-param)
 
+  /// Обработка голосов PREPARE от participant cores.
+  void HandlePrepareResponse(Task task);  // NOLINT(performance-unnecessary-value-param)
+
  private:
   /// Ожидание завершения финализации на participant cores
   struct PendingFinalize {
@@ -58,6 +62,17 @@ class TxCoordinator {
     uint64_t tx_id{0};
     int remaining{0};               // Сколько acks ещё ждём
     bool is_commit{true};           // true=commit, false=rollback
+    TaskType client_response_type{TaskType::TX_COMMIT_RESPONSE};
+    std::string error_message;
+  };
+
+  /// Ожидание голосов участников на фазе PREPARE
+  struct PendingPrepare {
+    uint64_t client_request_id{0};
+    uint64_t tx_id{0};
+    int remaining{0};
+    bool any_no{false};
+    std::string first_error;
   };
 
   void HandleBegin(Task& task);
@@ -73,6 +88,8 @@ class TxCoordinator {
 
   /// Таблица активных и завершённых транзакций
   std::unordered_map<uint64_t, TxRecord> tx_table_;
+
+  std::unordered_map<uint64_t, PendingPrepare> pending_prepares_;
 
   std::unordered_map<uint64_t, PendingFinalize> pending_finalizes_;
 

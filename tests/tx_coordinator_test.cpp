@@ -117,6 +117,7 @@ class TxCoordinatorRoutingTest : public ::testing::Test {
   [[nodiscard]] int ForwardedCount() const { return forwarded_count_; }
   [[nodiscard]] const Task& ForwardedTask() const { return forwarded_task_; }
   [[nodiscard]] const Task& LastResponse() const { return last_response_; }
+  [[nodiscard]] TxCoordinator& Coordinator() { return *coordinator_; }
   [[nodiscard]] uint64_t LastResponseRequestId() const {
     return last_response_request_id_;
   }
@@ -168,6 +169,16 @@ class TxCoordinatorRoutingTest : public ::testing::Test {
     task.type = type;
     task.tx_id = tx_id;
     coordinator_->HandleFinalizeResponse(std::move(task));
+  }
+
+  void HandlePrepareResponse(uint64_t tx_id, bool success,
+                             const std::string& error = "") {
+    Task task;
+    task.type = TaskType::TX_PREPARE_RESPONSE;
+    task.tx_id = tx_id;
+    task.success = success;
+    task.error_message = error;
+    coordinator_->HandlePrepareResponse(std::move(task));
   }
 
  private:
@@ -297,7 +308,8 @@ TEST_F(TxCoordinatorTest, CommitNoParticipants_ImmediateResponse) {
   EXPECT_EQ(LastResponse().tx_id, tx_id);
 }
 
-TEST_F(TxCoordinatorRoutingTest, CommitWithParticipants_SendsFinalize) {
+TEST_F(TxCoordinatorRoutingTest,
+       CommitWithParticipants_SendsPrepareThenFinalizeAndResponds) {
   const uint64_t tx_id = DoBegin();
   SendExecuteSetToCoreSeven(tx_id);
   const int baseline_response_count = ResponseCount();
@@ -306,6 +318,14 @@ TEST_F(TxCoordinatorRoutingTest, CommitWithParticipants_SendsFinalize) {
 
   EXPECT_EQ(ResponseCount(), baseline_response_count);
   EXPECT_EQ(ForwardedCount(), 2);
+  EXPECT_EQ(ForwardedTask().type, TaskType::TX_PREPARE_REQUEST);
+  EXPECT_EQ(ForwardedTask().tx_id, tx_id);
+  EXPECT_EQ(ForwardedTask().snapshot_ts, LastBeginSnapshotTs());
+  EXPECT_EQ(ForwardedTask().reply_to_core, 0);
+
+  HandlePrepareResponse(tx_id, true);
+
+  EXPECT_EQ(ForwardedCount(), 3);
   EXPECT_EQ(ForwardedTask().type, TaskType::TX_FINALIZE_COMMIT_REQUEST);
   EXPECT_EQ(ForwardedTask().tx_id, tx_id);
   EXPECT_GT(ForwardedTask().commit_ts, 0U);
@@ -342,12 +362,147 @@ TEST_F(TxCoordinatorRoutingTest, RollbackWithParticipants_SendsAbortFinalize) {
   EXPECT_EQ(LastResponseRequestId(), rollback_request_id);
 }
 
+TEST_F(TxCoordinatorRoutingTest, CommitWithParticipants_SendsPrepare) {
+  const uint64_t tx_id = DoBegin();
+  SendExecuteSetToCoreSeven(tx_id);
+  const int baseline_response_count = ResponseCount();
+
+  SendCommit(tx_id);
+
+  EXPECT_EQ(ResponseCount(), baseline_response_count);
+  EXPECT_EQ(ForwardedCount(), 2);
+  EXPECT_EQ(ForwardedTask().type, TaskType::TX_PREPARE_REQUEST);
+  EXPECT_EQ(ForwardedTask().tx_id, tx_id);
+  EXPECT_EQ(ForwardedTask().snapshot_ts, LastBeginSnapshotTs());
+  EXPECT_EQ(ForwardedTask().reply_to_core, 0);
+  EXPECT_TRUE(Coordinator().pending_prepares_.contains(tx_id));
+  EXPECT_EQ(Coordinator().tx_table_[tx_id].state, TxState::PREPARING);
+}
+
+TEST_F(TxCoordinatorRoutingTest, PrepareAllYes_SendsFinalizeCommit) {
+  const uint64_t tx_id = DoBegin();
+  SendExecuteSetToCoreSeven(tx_id);
+  SendCommit(tx_id);
+
+  HandlePrepareResponse(tx_id, true);
+
+  EXPECT_EQ(ForwardedCount(), 3);
+  EXPECT_EQ(ForwardedTask().type, TaskType::TX_FINALIZE_COMMIT_REQUEST);
+  EXPECT_EQ(ForwardedTask().tx_id, tx_id);
+  EXPECT_GT(ForwardedTask().commit_ts, 0U);
+  EXPECT_EQ(ForwardedTask().reply_to_core, 0);
+  EXPECT_FALSE(Coordinator().pending_prepares_.contains(tx_id));
+  EXPECT_TRUE(Coordinator().pending_finalizes_.contains(tx_id));
+  EXPECT_EQ(Coordinator().tx_table_[tx_id].state, TxState::COMMITTED);
+}
+
+TEST_F(TxCoordinatorRoutingTest, PrepareAnyNo_SendsFinalizeAbort) {
+  const uint64_t tx_id = DoBegin();
+  SendExecuteSetToCoreSeven(tx_id);
+  SendCommit(tx_id);
+
+  HandlePrepareResponse(tx_id, false, "write_conflict");
+
+  EXPECT_EQ(ForwardedCount(), 3);
+  EXPECT_EQ(ForwardedTask().type, TaskType::TX_FINALIZE_ABORT_REQUEST);
+  EXPECT_EQ(ForwardedTask().tx_id, tx_id);
+  EXPECT_EQ(ForwardedTask().reply_to_core, 0);
+  ASSERT_TRUE(Coordinator().pending_finalizes_.contains(tx_id));
+  EXPECT_EQ(Coordinator().pending_finalizes_[tx_id].client_response_type,
+            TaskType::TX_COMMIT_RESPONSE);
+  EXPECT_EQ(Coordinator().pending_finalizes_[tx_id].error_message,
+            "write_conflict");
+  EXPECT_EQ(Coordinator().tx_table_[tx_id].state, TxState::ABORTED);
+}
+
+TEST_F(TxCoordinatorRoutingTest,
+       PrepareAllYes_ThenFinalize_CommitResponseSucceeds) {
+  const uint64_t tx_id = DoBegin();
+  SendExecuteSetToCoreSeven(tx_id);
+  const int baseline_response_count = ResponseCount();
+  const uint64_t commit_request_id = SendCommit(tx_id);
+
+  HandlePrepareResponse(tx_id, true);
+  HandleFinalizeResponse(TaskType::TX_FINALIZE_COMMIT_RESPONSE, tx_id);
+
+  EXPECT_EQ(ResponseCount(), baseline_response_count + 1);
+  EXPECT_EQ(LastResponseRequestId(), commit_request_id);
+  EXPECT_EQ(LastResponse().type, TaskType::TX_COMMIT_RESPONSE);
+  EXPECT_TRUE(LastResponse().success);
+  EXPECT_TRUE(LastResponse().error_message.empty());
+}
+
+TEST_F(TxCoordinatorRoutingTest,
+       PrepareAnyNo_ThenFinalize_CommitResponseFails) {
+  const uint64_t tx_id = DoBegin();
+  SendExecuteSetToCoreSeven(tx_id);
+  const int baseline_response_count = ResponseCount();
+  const uint64_t commit_request_id = SendCommit(tx_id);
+
+  HandlePrepareResponse(tx_id, false, "prepare_rejected:write_conflict");
+  HandleFinalizeResponse(TaskType::TX_FINALIZE_ABORT_RESPONSE, tx_id);
+
+  EXPECT_EQ(ResponseCount(), baseline_response_count + 1);
+  EXPECT_EQ(LastResponseRequestId(), commit_request_id);
+  EXPECT_EQ(LastResponse().type, TaskType::TX_COMMIT_RESPONSE);
+  EXPECT_FALSE(LastResponse().success);
+  EXPECT_EQ(LastResponse().error_message, "prepare_rejected:write_conflict");
+}
+
+TEST_F(TxCoordinatorTest, PrepareResponseForUnknownTx_Ignored) {
+  const int baseline_response_count = ResponseCount();
+
+  Task task;
+  task.type = TaskType::TX_PREPARE_RESPONSE;
+  task.tx_id = 404;
+  task.success = false;
+  task.error_message = "write_conflict";
+  Coordinator().HandlePrepareResponse(std::move(task));
+
+  EXPECT_EQ(ResponseCount(), baseline_response_count);
+  EXPECT_TRUE(Coordinator().pending_prepares_.empty());
+}
+
+TEST_F(TxCoordinatorTest, ExecuteDuringPreparing_Fails) {
+  const uint64_t tx_id = DoBegin();
+  Coordinator().tx_table_[tx_id].state = TxState::PREPARING;
+
+  SendExecute(TaskType::TX_EXECUTE_SET_REQUEST, tx_id);
+
+  EXPECT_EQ(LastResponse().type, TaskType::TX_EXECUTE_RESPONSE);
+  EXPECT_FALSE(LastResponse().success);
+  EXPECT_NE(LastResponse().error_message.find("not_active"), std::string::npos);
+}
+
+TEST_F(TxCoordinatorTest, CommitDuringPreparing_Fails) {
+  const uint64_t tx_id = DoBegin();
+  Coordinator().tx_table_[tx_id].state = TxState::PREPARING;
+
+  SendCommit(tx_id);
+
+  EXPECT_EQ(LastResponse().type, TaskType::TX_COMMIT_RESPONSE);
+  EXPECT_FALSE(LastResponse().success);
+  EXPECT_NE(LastResponse().error_message.find("not_active"), std::string::npos);
+}
+
+TEST_F(TxCoordinatorTest, RollbackDuringPreparing_Fails) {
+  const uint64_t tx_id = DoBegin();
+  Coordinator().tx_table_[tx_id].state = TxState::PREPARING;
+
+  SendRollback(tx_id);
+
+  EXPECT_EQ(LastResponse().type, TaskType::TX_ROLLBACK_RESPONSE);
+  EXPECT_FALSE(LastResponse().success);
+  EXPECT_NE(LastResponse().error_message.find("not_active"), std::string::npos);
+}
+
 TEST_F(TxCoordinatorTest, HandleFinalizeResponse_CompletesCommit) {
   Coordinator().pending_finalizes_[77] = TxCoordinator::PendingFinalize{
       .client_request_id = 555,
       .tx_id = 77,
       .remaining = 2,
       .is_commit = true,
+      .client_response_type = TaskType::TX_COMMIT_RESPONSE,
   };
 
   const int baseline_response_count = ResponseCount();
@@ -372,6 +527,30 @@ TEST_F(TxCoordinatorTest, HandleFinalizeResponse_CompletesCommit) {
   EXPECT_TRUE(LastResponse().success);
   EXPECT_EQ(LastResponse().tx_id, 77U);
   EXPECT_FALSE(Coordinator().pending_finalizes_.contains(77));
+}
+
+TEST_F(TxCoordinatorTest,
+       HandleFinalizeResponse_FailedCommitReturnsCommitError) {
+  Coordinator().pending_finalizes_[88] = TxCoordinator::PendingFinalize{
+      .client_request_id = 777,
+      .tx_id = 88,
+      .remaining = 1,
+      .is_commit = false,
+      .client_response_type = TaskType::TX_COMMIT_RESPONSE,
+      .error_message = "prepare_rejected:constraint_violation",
+  };
+
+  Task ack;
+  ack.type = TaskType::TX_FINALIZE_ABORT_RESPONSE;
+  ack.tx_id = 88;
+  Coordinator().HandleFinalizeResponse(std::move(ack));
+
+  EXPECT_EQ(LastResponseRequestId(), 777U);
+  EXPECT_EQ(LastResponse().type, TaskType::TX_COMMIT_RESPONSE);
+  EXPECT_FALSE(LastResponse().success);
+  EXPECT_EQ(LastResponse().error_message,
+            "prepare_rejected:constraint_violation");
+  EXPECT_FALSE(Coordinator().pending_finalizes_.contains(88));
 }
 
 TEST_F(TxCoordinatorTest, ExecuteOnCommittedTx_Fails) {
