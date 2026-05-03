@@ -12,6 +12,7 @@
 #include "storage/storage_engine.h"
 #include "core/worker.h"
 #include "core/core_dispatcher.h"
+#include "transaction/tx_coordinator.h"
 
 namespace po = boost::program_options;
 using namespace db;
@@ -79,8 +80,29 @@ int main(int argc, char *argv[]) {
           });
     }
 
-    auto handler = std::make_unique<GrpcHandler>(0, *routers[0]);
-    auto dispatcher = std::make_unique<CoreDispatcher>(*routers[0], *handler);
+    // 1. Deferred dispatcher pointer — разрывает цикл GrpcHandler↔CoreDispatcher
+    CoreDispatcher* dispatcher_ptr = nullptr;
+    auto dispatch_fn = [&dispatcher_ptr](Task t) {
+      dispatcher_ptr->Dispatch(std::move(t));
+    };
+
+    // 2. GrpcHandler с dispatch_fn (вместо Router&)
+    auto handler = std::make_unique<GrpcHandler>(0, dispatch_fn);
+
+    // 3. TxCoordinator с resume callback
+    auto tx_coordinator = std::make_unique<TxCoordinator>(
+      *routers[0],
+      [&handler_ref = *handler](uint64_t rid, Task resp) {
+        handler_ref.ResumeCoroutine(rid, std::move(resp));
+      });
+
+    // 4. CoreDispatcher — теперь все dependencies готовы
+    auto dispatcher = std::make_unique<CoreDispatcher>(*routers[0], *handler, *tx_coordinator);
+
+    // 5. Назначаем deferred pointer — dispatch_fn теперь работает
+    // SAFETY: dispatch_fn вызывается только после старта event loop,
+    // к этому моменту dispatcher_ptr уже валиден
+    dispatcher_ptr = dispatcher.get();
 
     workers[0]->RegisterGrpcService(&handler->GetService());
     workers[0]->SetTaskProcessor([&dispatcher_ref = *dispatcher](Task task) {
