@@ -28,3 +28,4 @@ src/**/*.grpc.pb.h
 # Трекаем планы и handoff — нужны для продолжения работы
 !.sisyphus/plans/
 !.sisyphus/drafts/
+.sisyphus/
