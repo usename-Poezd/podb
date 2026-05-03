@@ -20,5 +20,11 @@ src/**/*.grpc.pb.h
 *~
 .DS_Store
 
-# Локальные артефакты агента
-.sisyphus/
+# Локальные артефакты агента (evidence, логи)
+.sisyphus/evidence/
+.sisyphus/boulder.json
+.sisyphus/ralph-loop.local.md
+.sisyphus/notepads/
+# Трекаем планы и handoff — нужны для продолжения работы
+!.sisyphus/plans/
+!.sisyphus/drafts/
