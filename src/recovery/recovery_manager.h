@@ -1,9 +1,11 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "checkpoint/checkpoint_reader.h"
 #include "checkpoint/checkpoint_writer.h"
@@ -48,6 +50,14 @@ public:
   /// Phase 2: Coordinator recovery. Replay Core 0 WAL → восстановить tx_table.
   [[nodiscard]] static RecoveredCoordinatorState
   RecoverCoordinator(const std::string& data_dir);
+
+  /// Repartition: recover old topology, resolve все txs, rehash в новую topology.
+  /// Populates new_storages with committed data under new hash routing.
+  /// Пишет fresh snapshots. Удаляет old WAL files.
+  static void Repartition(const std::string& data_dir,
+                          uint32_t old_num_cores,
+                          uint32_t new_num_cores,
+                          std::vector<std::unique_ptr<StorageEngine>>& new_storages);
 
   /// Утилита: путь к WAL файлу для core.
   [[nodiscard]] static std::string WalPath(const std::string& data_dir, int core_id);

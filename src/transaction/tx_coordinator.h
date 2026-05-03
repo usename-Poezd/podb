@@ -1,10 +1,12 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <unordered_map>
 #include <unordered_set>
 
+#include "core/clock.h"
 #include "core/task.h"
 #include "router/router.h"
 #include "wal/wal_record.h"
@@ -28,6 +30,8 @@ struct TxRecord {
   uint64_t created_ts{0};
   uint64_t last_heartbeat_ts{0};
   std::unordered_set<int> participant_cores;  // Cores с intents для этой tx
+  Clock::TimePoint created_time{};
+  Clock::TimePoint last_heartbeat_time{};
 };
 
 /// Координатор транзакций на Core 0.
@@ -41,7 +45,11 @@ class TxCoordinator {
   /// @param resume_fn Callback для возврата ответа в GrpcHandler
   /// (через request_id)
   TxCoordinator(Router& router, std::function<void(uint64_t, Task)> resume_fn,
-                WalWriter* wal = nullptr);
+                WalWriter* wal = nullptr, Clock* clock = nullptr,
+                std::chrono::milliseconds lease_timeout =
+                    std::chrono::seconds(30),
+                std::chrono::milliseconds stuck_timeout =
+                    std::chrono::seconds(10));
 
   /// Обработка control-операций (Begin/Commit/Rollback/Heartbeat).
   /// Эти операции не покидают Core 0.
@@ -56,6 +64,9 @@ class TxCoordinator {
 
   /// Обработка голосов PREPARE от participant cores.
   void HandlePrepareResponse(Task task);  // NOLINT(performance-unnecessary-value-param)
+
+  void ReapStaleTransactions();
+  [[nodiscard]] uint64_t GetMinActiveSnapshot() const;
 
   /// Загрузить восстановленное состояние coordinator из WAL replay.
   void LoadRecoveredState(std::unordered_map<uint64_t, TxRecord> recovered_tx_table,
@@ -73,6 +84,7 @@ class TxCoordinator {
     bool is_commit{true};           // true=commit, false=rollback
     TaskType client_response_type{TaskType::TX_COMMIT_RESPONSE};
     std::string error_message;
+    Clock::TimePoint created_time{};  // for stuck-timeout detection
   };
 
   /// Ожидание голосов участников на фазе PREPARE
@@ -82,6 +94,7 @@ class TxCoordinator {
     int remaining{0};
     bool any_no{false};
     std::string first_error;
+    Clock::TimePoint created_time{};  // for stuck-timeout detection
   };
 
   void HandleBegin(Task& task);
@@ -95,6 +108,11 @@ class TxCoordinator {
   Router& router_;  // NOLINT(cppcoreguidelines-avoid-const-or-ref-data-members)
   std::function<void(uint64_t, Task)> resume_fn_;
   WalWriter* wal_{nullptr};
+  Clock* clock_{nullptr};
+  SteadyClock default_clock_;
+  std::chrono::milliseconds lease_timeout_;
+  std::chrono::milliseconds stuck_timeout_;
+  static constexpr uint64_t kReaperSentinel = UINT64_MAX;
 
   /// Таблица активных и завершённых транзакций
   std::unordered_map<uint64_t, TxRecord> tx_table_;

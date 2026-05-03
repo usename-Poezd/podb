@@ -1,3 +1,4 @@
+#include <climits>
 #include <iostream>
 #include <memory>
 #include <thread>
@@ -27,7 +28,9 @@ int main(int argc, char *argv[]) {
     desc.add_options()("help,h", "Produce help message")("cores,c", po::value<int>(),
                                                          "Number of worker threads/cores")(
         "port,p", po::value<int>()->default_value(9906), "TCP port for gRPC")(
-        "data-dir,d", po::value<std::string>()->default_value("./data"), "Data directory for WAL/snapshots");
+        "data-dir,d", po::value<std::string>()->default_value("./data"), "Data directory for WAL/snapshots")(
+        "repartition-on-recovery", po::bool_switch()->default_value(false),
+        "Allow offline repartition when --cores differs from stored topology");
 
     po::variables_map vm;
     po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -47,26 +50,42 @@ int main(int argc, char *argv[]) {
     }
     const int port = vm["port"].as<int>();
     const std::string data_dir = vm["data-dir"].as<std::string>();
+    const bool allow_repartition = vm["repartition-on-recovery"].as<bool>();
 
     std::cout << "[Main] Starting STRICT Thread-per-Core engine.\n";
     std::cout << "[Main] Total cores: " << cores << ". Port: " << port << "\n";
 
     std::filesystem::create_directories(data_dir);
 
-    auto topo_error = RecoveryManager::ValidateTopology(data_dir, cores);
-    if (!topo_error.empty()) {
-      std::cerr << "[Main] Topology mismatch: " << topo_error << "\n";
-      std::cerr << "[Main] Stored topology does not match --cores=" << cores << ". Aborting.\n";
-      return 1;
-    }
+    auto stored_meta = RecoveryManager::ReadTopologyMeta(data_dir);
+    uint64_t layout_epoch = stored_meta.has_value() ? stored_meta->layout_epoch : 1;
+    bool needs_repartition = stored_meta.has_value() &&
+        stored_meta->num_cores != static_cast<uint32_t>(cores);
 
     std::vector<std::unique_ptr<StorageEngine>> storages(cores);
     for (int i = 0; i < cores; ++i) {
       storages[i] = std::make_unique<StorageEngine>();
     }
 
-    for (int i = 0; i < cores; ++i) {
-      RecoveryManager::RecoverCore(i, data_dir, *storages[i]);
+    if (needs_repartition && !allow_repartition) {
+      std::cerr << "[Main] Topology mismatch: stored num_cores="
+                << stored_meta->num_cores << ", configured --cores=" << cores << "\n";
+      std::cerr << "[Main] Use --repartition-on-recovery to allow offline repartition. Aborting.\n";
+      return 1;
+    }
+
+    if (needs_repartition) {
+      std::cout << "[Main] Repartition recovery: "
+                << stored_meta->num_cores << " → " << cores << " cores\n";
+      RecoveryManager::Repartition(data_dir, stored_meta->num_cores,
+                                   static_cast<uint32_t>(cores), storages);
+      layout_epoch = stored_meta->layout_epoch + 1;
+    }
+
+    if (!needs_repartition) {
+      for (int i = 0; i < cores; ++i) {
+        RecoveryManager::RecoverCore(i, data_dir, *storages[i]);
+      }
     }
 
     std::vector<std::unique_ptr<WalWriter>> wal_writers(cores);
@@ -164,9 +183,44 @@ int main(int argc, char *argv[]) {
     tx_coordinator->ResolveInDoubt();
 
     RecoveryManager::WriteTopologyMeta(data_dir,
-      {static_cast<uint32_t>(cores), 1});
+      {static_cast<uint32_t>(cores), layout_epoch});
 
     std::cout << "[Main] Recovery complete. Starting gRPC server.\n";
+
+    // Периодический reaper + GC timer на Core 0
+    auto reaper_timer = std::make_shared<boost::asio::steady_timer>(workers[0]->GetIoContext());
+    std::function<void()> schedule_reap;
+
+    schedule_reap = [reaper_timer, &tx_coordinator, &executors, &workers, cores,
+                     &schedule_reap]() {
+      reaper_timer->expires_after(std::chrono::seconds(1));
+      reaper_timer->async_wait(
+          [&, reaper_timer](const boost::system::error_code &ec) {
+            if (ec) return;
+
+            tx_coordinator->ReapStaleTransactions();
+
+            uint64_t watermark = tx_coordinator->GetMinActiveSnapshot();
+            if (watermark > 0 && watermark != UINT64_MAX) {
+              Task gc0;
+              gc0.type = TaskType::GC_REQUEST;
+              gc0.snapshot_ts = watermark;
+              executors[0]->Execute(std::move(gc0));
+              for (int i = 1; i < cores; ++i) {
+                Task gc_task;
+                gc_task.type = TaskType::GC_REQUEST;
+                gc_task.snapshot_ts = watermark;
+                gc_task.reply_to_core = -1;
+                workers[i]->PushTask(std::move(gc_task));
+              }
+            }
+
+            schedule_reap();
+          });
+    };
+    schedule_reap();
+
+    std::cout << "[Main] Reaper timer started (1s interval).\n";
 
     boost::asio::signal_set signals(workers[0]->GetIoContext(), SIGINT, SIGTERM);
     signals.async_wait([&](const boost::system::error_code &error, int signal_number) {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <functional>
 #include <optional>
 #include <ranges>
@@ -217,6 +218,65 @@ public:
       }
     }
     return {true, {}};
+  }
+
+  /// Garbage collect: удалить committed версии с commit_ts < watermark.
+  /// Всегда сохраняет как минимум latest committed version per key.
+  /// Удаляет tombstones когда они единственная версия и commit_ts < watermark.
+  /// Возвращает количество удалённых версий.
+  size_t GarbageCollect(uint64_t watermark) {
+    if (watermark == 0) return 0;
+    size_t removed = 0;
+
+    auto it = versions_.begin();
+    while (it != versions_.end()) {
+      auto &chain = it->second;
+
+      // Найти latest committed version (skip intents at top)
+      int latest_committed_idx = -1;
+      for (int i = static_cast<int>(chain.size()) - 1; i >= 0; --i) {
+        if (!chain[i].is_intent) {
+          latest_committed_idx = i;
+          break;
+        }
+      }
+
+      if (latest_committed_idx < 0) {
+        ++it;
+        continue;  // Только intents — не трогать
+      }
+
+      // Удалить committed versions ниже latest_committed с commit_ts < watermark
+      if (latest_committed_idx > 0) {
+        auto begin = chain.begin();
+        auto end = begin + latest_committed_idx;
+        auto erase_end = std::remove_if(begin, end,
+          [watermark, &removed](const VersionedValue &v) {
+            if (!v.is_intent && v.commit_ts < watermark) {
+              ++removed;
+              return true;
+            }
+            return false;
+          });
+        chain.erase(erase_end, end);
+      }
+
+      // Если остался только один tombstone с commit_ts < watermark и нет intents — удалить весь key
+      if (chain.size() == 1 && !chain[0].is_intent &&
+          chain[0].is_deleted && chain[0].commit_ts < watermark) {
+        it = versions_.erase(it);
+        ++removed;
+        continue;
+      }
+
+      if (chain.empty()) {
+        it = versions_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+
+    return removed;
   }
 
 private:

@@ -134,6 +134,14 @@ public:
       response.success = true;
       break;
     }
+    case TaskType::GC_REQUEST: {
+      const size_t removed = storage_.GarbageCollect(request.snapshot_ts);
+      std::printf("[Core %d] GC watermark=%lu removed=%zu\n",
+                  core_id_, request.snapshot_ts, removed);
+      response.type = TaskType::GC_RESPONSE;
+      response.success = true;
+      break;
+    }
     default:
       return response;
     }

@@ -71,3 +71,21 @@ target_link_libraries(recovery_test PRIVATE
     db_storage
 )
 gtest_discover_tests(recovery_test TEST_PREFIX "recovery.")
+
+add_executable(storage_gc_test storage_gc_test.cpp)
+target_link_libraries(storage_gc_test PRIVATE GTest::gtest_main db_storage)
+gtest_discover_tests(storage_gc_test TEST_PREFIX "storage_gc.")
+
+add_executable(tx_reaper_test tx_reaper_test.cpp)
+target_link_libraries(tx_reaper_test PRIVATE GTest::gtest_main db_transaction db_router db_core)
+gtest_discover_tests(tx_reaper_test TEST_PREFIX "tx_reaper.")
+
+add_executable(repartition_test repartition_test.cpp)
+target_link_libraries(repartition_test PRIVATE
+    GTest::gtest_main
+    db_recovery
+    db_checkpoint
+    db_wal
+    db_storage
+)
+gtest_discover_tests(repartition_test TEST_PREFIX "repartition.")

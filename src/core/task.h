@@ -30,6 +30,8 @@ enum class TaskType : uint8_t {
   TX_PREPARE_REQUEST = 24,           // OCC validation запрос на participant core
   TX_PREPARE_RESPONSE = 25,          // Голос участника (YES/NO) обратно координатору
   TX_FINALIZE_ABORT_RESPONSE = 26,   // Ack финализации abort (замена TX_EXECUTE_RESPONSE хака)
+  GC_REQUEST = 30,                   // Запрос на сборку мусора (удаление устаревших версий)
+  GC_RESPONSE = 31,                  // Ответ на GC_REQUEST
 };
 
 inline const char *TaskTypeName(TaskType t) noexcept {
@@ -76,6 +78,10 @@ inline const char *TaskTypeName(TaskType t) noexcept {
     return "TXPR←";
   case TaskType::TX_FINALIZE_ABORT_RESPONSE:
     return "TXFA←";
+  case TaskType::GC_REQUEST:
+    return "GC  ";
+  case TaskType::GC_RESPONSE:
+    return "GC← ";
   }
   return "???";
 }
@@ -112,7 +118,8 @@ struct Task {
            type == TaskType::TX_HEARTBEAT_REQUEST ||
            type == TaskType::TX_FINALIZE_COMMIT_REQUEST ||
            type == TaskType::TX_FINALIZE_ABORT_REQUEST ||
-           type == TaskType::TX_PREPARE_REQUEST;
+           type == TaskType::TX_PREPARE_REQUEST ||
+           type == TaskType::GC_REQUEST;
   }
 
   bool IsResponse() const noexcept {
@@ -124,7 +131,8 @@ struct Task {
            type == TaskType::TX_HEARTBEAT_RESPONSE ||
            type == TaskType::TX_FINALIZE_COMMIT_RESPONSE ||
            type == TaskType::TX_PREPARE_RESPONSE ||
-           type == TaskType::TX_FINALIZE_ABORT_RESPONSE;
+           type == TaskType::TX_FINALIZE_ABORT_RESPONSE ||
+           type == TaskType::GC_RESPONSE;
   }
 
   /// Транзакционные control-операции (обрабатываются TxCoordinator на Core 0)
@@ -194,6 +202,9 @@ struct Task {
     case TaskType::TX_PREPARE_REQUEST:
     case TaskType::TX_PREPARE_RESPONSE:
       return "PREPARE";
+    case TaskType::GC_REQUEST:
+    case TaskType::GC_RESPONSE:
+      return "GC";
     }
     return "???";
   }

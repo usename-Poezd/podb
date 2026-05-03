@@ -8,9 +8,12 @@
 #include <cerrno>
 #include <cstring>
 #include <filesystem>
+#include <functional>
+#include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "wal/crc32c.h"
 
@@ -251,6 +254,73 @@ RecoveryManager::RecoverCoordinator(const std::string& data_dir) {
   }
 
   return state;
+}
+
+void RecoveryManager::Repartition(
+    const std::string& data_dir,
+    uint32_t old_num_cores,
+    uint32_t new_num_cores,
+    std::vector<std::unique_ptr<StorageEngine>>& new_storages) {
+  new_storages.resize(new_num_cores);
+  for (uint32_t core_id = 0; core_id < new_num_cores; ++core_id) {
+    if (!new_storages[core_id]) {
+      new_storages[core_id] = std::make_unique<StorageEngine>();
+    } else {
+      new_storages[core_id]->Clear();
+    }
+  }
+
+  std::vector<std::unique_ptr<StorageEngine>> old_storages(old_num_cores);
+  for (uint32_t core_id = 0; core_id < old_num_cores; ++core_id) {
+    old_storages[core_id] = std::make_unique<StorageEngine>();
+    RecoverCore(static_cast<int>(core_id), data_dir, *old_storages[core_id]);
+  }
+
+  const auto coordinator_state = RecoverCoordinator(data_dir);
+  for (const auto& [tx_id, tx] : coordinator_state.tx_table) {
+    for (const auto& storage : old_storages) {
+      switch (tx.state) {
+      case TxState::COMMITTED:
+        storage->CommitTransaction(tx_id, tx.snapshot_ts);
+        break;
+      case TxState::ACTIVE:
+      case TxState::PREPARING:
+      case TxState::ABORTED:
+        storage->AbortTransaction(tx_id);
+        break;
+      }
+    }
+  }
+
+  for (const auto& storage : old_storages) {
+    storage->ForEachLatestCommitted(
+        [&](const std::string& key, const BinaryValue& value, uint64_t commit_ts,
+            bool is_deleted) {
+          if (is_deleted) {
+            return;
+          }
+
+          const uint32_t new_owner = std::hash<std::string>{}(key) % new_num_cores;
+          new_storages[new_owner]->RestoreCommitted(key, value, commit_ts, false);
+        });
+  }
+
+  const auto old_topology = ReadTopologyMeta(data_dir);
+  const uint64_t new_epoch = old_topology.has_value() ? old_topology->layout_epoch + 1 : 1;
+  for (uint32_t core_id = 0; core_id < new_num_cores; ++core_id) {
+    CheckpointWriter::Write(*new_storages[core_id], SnapPath(data_dir, static_cast<int>(core_id)),
+                            static_cast<int>(core_id), {new_num_cores, new_epoch}, 0);
+  }
+
+  for (uint32_t core_id = 0; core_id < std::max(old_num_cores, new_num_cores); ++core_id) {
+    std::filesystem::remove(WalPath(data_dir, static_cast<int>(core_id)));
+  }
+
+  for (uint32_t core_id = new_num_cores; core_id < old_num_cores; ++core_id) {
+    std::filesystem::remove(SnapPath(data_dir, static_cast<int>(core_id)));
+  }
+
+  WriteTopologyMeta(data_dir, {new_num_cores, new_epoch});
 }
 
 std::string RecoveryManager::WalPath(const std::string& data_dir, int core_id) {

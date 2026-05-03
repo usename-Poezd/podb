@@ -17,6 +17,11 @@ int Router::RouteKey(const std::string &key) const noexcept {
 }
 
 void Router::RouteTask(Task task) {
+  if (task.type == TaskType::GC_REQUEST) {
+    local_execute_(std::move(task));
+    return;
+  }
+
   if (task.IsTxFinalize() || task.IsTxPrepare()) {
     std::printf("[Core %d] ROUT %s tx=%lu → local (direct-to-core)\n", local_core_id_,
                 TaskTypeName(task.type), task.tx_id);
