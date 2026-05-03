@@ -17,6 +17,14 @@ int Router::RouteKey(const std::string &key) const noexcept {
 }
 
 void Router::RouteTask(Task task) {
+  // Finalize задачи исполняются локально — они уже на правильном core
+  if (task.IsTxFinalize()) {
+    std::printf("[Core %d] ROUT %s tx=%lu → local (finalize)\n", local_core_id_,
+                TaskTypeName(task.type), task.tx_id);
+    local_execute_(std::move(task));
+    return;
+  }
+
   const int target = RouteKey(task.key);
   const uint32_t rid = static_cast<uint32_t>(task.request_id & 0xFFFFFFFF);
   if (target == local_core_id_) {
@@ -27,6 +35,16 @@ void Router::RouteTask(Task task) {
     std::printf("[Core %d] ROUT %s \"%.20s\" rid=%-4u → Core %d\n", local_core_id_,
                 TaskTypeName(task.type), task.key.c_str(), rid, target);
     all_workers_[target]->PushTask(std::move(task));
+  }
+}
+
+void Router::SendToCore(int target_core, Task task) {
+  if (target_core == local_core_id_) {
+    std::printf("[Core %d] SEND local FIN  tx=%lu\n", local_core_id_, task.tx_id);
+    local_execute_(std::move(task));
+  } else if (target_core >= 0 && target_core < num_cores_) {
+    std::printf("[Core %d] SEND → Core %d FIN  tx=%lu\n", local_core_id_, target_core, task.tx_id);
+    all_workers_[target_core]->PushTask(std::move(task));
   }
 }
 
