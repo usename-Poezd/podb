@@ -1,0 +1,49 @@
+name: Sync Wiki
+
+on:
+  push:
+    tags:
+      - '*'
+
+permissions:
+  contents: write
+
+jobs:
+  sync-wiki:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Sync wiki
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          WIKI_REPO="https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.wiki.git"
+          WIKI_DIR=$(mktemp -d)
+
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git clone "${WIKI_REPO}" "${WIKI_DIR}" 2>/dev/null || {
+            echo "::error::Wiki not initialized. Create at least one page manually at https://github.com/${{ github.repository }}/wiki"
+            exit 1
+          }
+
+          # Remove old content, keep .git
+          find "${WIKI_DIR}" -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+
+          # Copy new content
+          cp -a wiki/. "${WIKI_DIR}/"
+
+          cd "${WIKI_DIR}"
+
+          if git diff --quiet && [ -z "$(git ls-files --others --exclude-standard)" ]; then
+            echo "Wiki is up to date, nothing to push."
+            exit 0
+          fi
+
+          TAG="${GITHUB_REF_NAME}"
+          git add -A
+          git commit -m "Sync wiki from ${TAG}"
+          git push origin master
