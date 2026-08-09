@@ -82,6 +82,7 @@ service Database {
 | Поле | Тип | Описание |
 |------|-----|----------|
 | `isolation_level` | `string` | `"SNAPSHOT"` (по умолчанию). В будущем: `"SERIALIZABLE"` |
+| `priority` | `uint32` | Опционально. `0` (по умолчанию) → сервер назначит `NORMAL` (500). Влияет **только** на retry-backoff при write-write конфликтах (см. ниже) — не даёт права вытеснить чужой intent |
 
 **Ответ:**
 
@@ -91,10 +92,12 @@ service Database {
 | `snapshot_ts` | `uint64` | Snapshot timestamp для Snapshot Isolation |
 | `success` | `bool` | `true` — транзакция начата |
 | `error` | `string` | Детали ошибки (если `success = false`) |
+| `priority` | `uint32` | Фактически назначенный приоритет транзакции (эхо явного значения либо назначенный default) |
 
 **Семантика:**
 - Snapshot Isolation: все чтения внутри транзакции видят консистентный snapshot на `snapshot_ts`;
-- Координатор (Core 0) назначает `tx_id` и `snapshot_ts`;
+- Координатор (Core 0) назначает `tx_id`, `snapshot_ts` и `priority`;
+- `priority` привязан к `tx_id` на весь жизненный цикл транзакции — сохраняется на повторных `Execute`, но не переживает новый `Begin()` (полный перезапуск транзакции с нуля сбрасывает его на default, если не передать явно);
 - Транзакция живёт 30 секунд без heartbeat (lease timeout);
 - `Heartbeat` продлевает lease.
 
@@ -122,12 +125,14 @@ service Database {
 | `value` | `bytes` | Для GET: значение |
 | `success` | `bool` | `true` — операция прошла |
 | `error` | `string` | Детали ошибки (если `success = false`) |
+| `retry_after_ms` | `uint32` | Только при `error = "write_write_conflict"`, иначе `0`. Backoff-подсказка для повтора (см. ниже) |
 
 **Семантика:**
 - **GET**: читает из snapshot на `snapshot_ts`, видит собственные write intents (read-your-own-writes);
 - **SET**: создаёт write intent (ещё не committed);
 - Множественные Execute накапливают write intents;
-- Write-write конфликт обнаруживается сразу (если другая транзакция уже имеет intent на тот же ключ) → `success = false`, `error = "write_write_conflict"`.
+- Write-write конфликт обнаруживается сразу (если другая транзакция уже имеет intent на тот же ключ) → `success = false`, `error = "write_write_conflict"`, no-wait — конфликт решается по факту прибытия, а не по приоритету/возрасту транзакции;
+- `retry_after_ms` — экспоненциальный backoff с jitter, растущий с числом подряд идущих конфликтов этой tx и масштабируемый обратно пропорционально её `priority` (высокий priority → меньший backoff → больше шансов успеть раньше короткоживущих конкурентов). Это подсказка, а не гарантия — сервер ничего не блокирует, клиент вправе её игнорировать. Подробности и границы механизма — [[Design-MVCC-Transactions]], раздел «Priority + retry-backoff».
 
 ---
 
@@ -236,7 +241,7 @@ if not result.success:
 | Ситуация | RPC | Поведение |
 |----------|-----|-----------|
 | Ключ не найден | Get | `found = false`, `success = true` (не ошибка) |
-| Write-write конфликт | Execute (SET) | `success = false`, `error = "write_write_conflict"` |
+| Write-write конфликт | Execute (SET) | `success = false`, `error = "write_write_conflict"`, `retry_after_ms > 0` |
 | Транзакция не найдена | Execute/Commit/Rollback | `success = false`, `error = "tx_not_found"` |
 | Транзакция не активна | Execute/Commit | `success = false`, `error = "tx_not_active"` |
 | OCC конфликт при prepare | Commit | `success = false`, `error` содержит причину |

@@ -2,6 +2,10 @@ add_executable(smoke_test smoke_test.cpp)
 target_link_libraries(smoke_test PRIVATE GTest::gtest_main)
 gtest_discover_tests(smoke_test)
 
+add_executable(backoff_test backoff_test.cpp)
+target_link_libraries(backoff_test PRIVATE GTest::gtest_main db_project_headers)
+gtest_discover_tests(backoff_test TEST_PREFIX "backoff.")
+
 add_executable(tx_coordinator_test tx_coordinator_test.cpp)
 target_link_libraries(tx_coordinator_test PRIVATE
     GTest::gtest_main

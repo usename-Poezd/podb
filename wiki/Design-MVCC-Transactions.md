@@ -179,6 +179,18 @@ Tx50 writes A → sees foreign intent → immediate WRITE_CONFLICT
 
 **Минус:** выше шанс abort under contention.
 
+### Priority + retry-backoff: смягчение (не устранение) голодания
+
+No-wait разрешает write-write конфликт исключительно по факту прибытия: кто раньше поставил intent, тот и выиграл. Возраст/важность транзакции при этом не учитывается вообще — в отличие, например, от push-механизма CockroachDB, где более старая транзакция может вытеснить (abort) более молодую, владеющую нужным intent-ом. Из-за этого длинная транзакция, которая упорно ретраит один и тот же write против потока коротких писателей на hot key, теоретически может проигрывать бесконечно (livelock): у неё нет ни приоритета, ни права вытеснить чужой intent.
+
+Реализован дешёвый первый шаг к анти-голоданию — **explicit priority + adaptive retry-backoff**, без изменения самого правила разрешения конфликта (`WriteIntent` остаётся no-wait):
+
+- `BeginTransaction` принимает опциональный `priority` (uint32, `0` = не задан → сервер назначает `kTxPriorityNormal = 500`; см. `src/core/backoff.h`). Приоритет привязан к `tx_id` на весь жизненный цикл транзакции и не сбрасывается при повторных `Execute` — сбрасывается только при новом `Begin()`.
+- Каждый write-write конфликт (`TX_EXECUTE_SET_REQUEST` → `WRITE_CONFLICT`) считается в `StorageEngine::conflict_streaks_` (per-tx счётчик подряд идущих конфликтов, `NoteWriteIntentOutcome`) и по нему считается `retry_after_ms` — экспоненциальный backoff с jitter, **обратно пропорциональный priority** (`ComputeBackoffMs`): высокоприоритетная (например, долгая аналитическая) транзакция получает меньший backoff и в среднем чаще успевает захватить intent раньше потока low/normal-priority короткоживущих писателей.
+- `retry_after_ms` возвращается клиенту в `ExecuteResponse` — это подсказка, не принуждение; сам сервер ничего не блокирует и не откладывает.
+
+**Явно не гарантирует отсутствие голодания.** Это статистическое смягчение (desync повторов через jitter + сдвиг шансов через priority), а не hard guarantee, как дал бы полноценный wound-wait/push (сравнение приоритетов + принудительный abort текущего владельца intent-а через coordinator). Такой push-механизм пока не реализован: он требует нового канала participant-core → coordinator ("абортни tx=Y, тебя вытеснил более приоритетный tx=X"), которого сейчас нет — есть только `coordinator → participant` (`PREPARE`/`FINALIZE`). Если анти-голодание должно быть гарантированным, а не вероятностным — это следующий шаг.
+
 ### Read-Write conflict
 
 Под Snapshot Isolation: чтение идёт по snapshot и игнорирует чужие intents, поэтому достаточно `ww`-conflict detection.

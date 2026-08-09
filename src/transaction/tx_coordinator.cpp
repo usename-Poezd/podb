@@ -56,6 +56,7 @@ void TxCoordinator::HandleExecute(Task task) {
 
   // Stage 2: сохраняем TX тип, добавляем snapshot_ts из TxRecord.
   task.snapshot_ts = tx_it->second.snapshot_ts;
+  task.priority = tx_it->second.priority;  // для расчёта retry-backoff на owner-core
   tx_it->second.last_heartbeat_time = clock_->Now();
 
   // Для SET операций — трекаем participant core.
@@ -71,6 +72,7 @@ void TxCoordinator::HandleBegin(Task& task) {
   const uint64_t tx_id = next_tx_id_++;
   const uint64_t snapshot_ts = next_snapshot_ts_++;
   const uint64_t now_ts = next_snapshot_ts_++;
+  const uint32_t priority = task.priority != 0 ? task.priority : kTxPriorityNormal;
 
   tx_table_[tx_id] = TxRecord{
       .tx_id = tx_id,
@@ -79,6 +81,7 @@ void TxCoordinator::HandleBegin(Task& task) {
       .created_ts = now_ts,
       .last_heartbeat_ts = now_ts,
       .participant_cores = {},
+      .priority = priority,
   };
 
   const auto now = clock_->Now();
@@ -98,6 +101,7 @@ void TxCoordinator::HandleBegin(Task& task) {
   response.success = true;
   response.tx_id = tx_id;
   response.snapshot_ts = snapshot_ts;
+  response.priority = priority;
   SendResponse(task.request_id, std::move(response));
 }
 

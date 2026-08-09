@@ -1,8 +1,10 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstring>
 #include <string>
 
+#include "core/backoff.h"
 #include "core/task.h"
 #include "execution/kv_executor.h"
 #include "storage/storage_engine.h"
@@ -114,6 +116,7 @@ TEST_F(KvExecutorTest, TxExecuteSet_Conflict) {
   req.key = "k";
   req.value = MakeValue("tx2");
   req.tx_id = 2;
+  req.priority = kTxPriorityNormal;
   req.reply_to_core = 0;
 
   const auto resp = executor_.Execute(std::move(req));
@@ -121,6 +124,76 @@ TEST_F(KvExecutorTest, TxExecuteSet_Conflict) {
   EXPECT_EQ(resp.type, TaskType::TX_EXECUTE_RESPONSE);
   EXPECT_FALSE(resp.success);
   EXPECT_EQ(resp.error_message, "write_write_conflict");
+  EXPECT_GT(resp.retry_after_ms, 0U);
+}
+
+TEST_F(KvExecutorTest, TxExecuteSet_Success_RetryAfterMsIsZero) {
+  Task req;
+  req.type = TaskType::TX_EXECUTE_SET_REQUEST;
+  req.key = "k";
+  req.value = MakeValue("v");
+  req.tx_id = 1;
+  req.priority = kTxPriorityNormal;
+  req.reply_to_core = 0;
+
+  const auto resp = executor_.Execute(std::move(req));
+
+  EXPECT_TRUE(resp.success);
+  EXPECT_EQ(resp.retry_after_ms, 0U);
+}
+
+TEST_F(KvExecutorTest, TxExecuteSet_RepeatedConflicts_BackoffUpperBoundGrows) {
+  ASSERT_EQ(storage_.WriteIntent("k", MakeValue("holder"), 1), WriteIntentResult::OK);
+
+  auto conflict_backoff = [this]() {
+    Task req;
+    req.type = TaskType::TX_EXECUTE_SET_REQUEST;
+    req.key = "k";
+    req.value = MakeValue("tx2");
+    req.tx_id = 2;
+    req.priority = kTxPriorityNormal;
+    req.reply_to_core = 0;
+    return executor_.Execute(std::move(req)).retry_after_ms;
+  };
+
+  // Первый конфликт (streak=1) задаёт верхнюю границу диапазона backoff.
+  const uint32_t first_backoff = conflict_backoff();
+
+  // Каждый следующий конфликт для той же tx увеличивает streak, а значит и
+  // диапазон backoff — минимум диапазона streak=2 уже равен максимуму
+  // диапазона streak=1, поэтому неравенство ниже гарантировано, а не
+  // вероятностно.
+  uint32_t max_later_backoff = 0;
+  for (int i = 0; i < 10; ++i) {
+    max_later_backoff = std::max(max_later_backoff, conflict_backoff());
+  }
+
+  EXPECT_GE(max_later_backoff, first_backoff);
+}
+
+TEST_F(KvExecutorTest, TxExecuteSet_HighPriority_GetsSmallerOrEqualBackoff) {
+  ASSERT_EQ(storage_.WriteIntent("k", MakeValue("holder"), 1), WriteIntentResult::OK);
+
+  auto max_backoff_for = [this](uint64_t tx_id, uint32_t priority, int attempts) {
+    uint32_t max_seen = 0;
+    for (int i = 0; i < attempts; ++i) {
+      Task req;
+      req.type = TaskType::TX_EXECUTE_SET_REQUEST;
+      req.key = "k";
+      req.value = MakeValue("v");
+      req.tx_id = tx_id;
+      req.priority = priority;
+      req.reply_to_core = 0;
+      const auto resp = executor_.Execute(std::move(req));
+      max_seen = std::max(max_seen, resp.retry_after_ms);
+    }
+    return max_seen;
+  };
+
+  const uint32_t normal_max = max_backoff_for(2, kTxPriorityNormal, 300);
+  const uint32_t high_max = max_backoff_for(3, kTxPriorityHigh, 300);
+
+  EXPECT_LE(high_max, normal_max);
 }
 
 TEST_F(KvExecutorTest, FinalizeCommit_PromotesIntents) {

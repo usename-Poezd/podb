@@ -157,16 +157,19 @@ private:
   }
 
   boost::asio::awaitable<void> HandleBeginTransaction(BeginTxRPC &rpc, db::BeginTxRequest &req) {
-    std::printf("[Core %d] >>> BEGIN_TX isolation=\"%s\"\n", core_id_, req.isolation_level().c_str());
+    std::printf("[Core %d] >>> BEGIN_TX isolation=\"%s\" priority=%u\n", core_id_,
+                req.isolation_level().c_str(), req.priority());
     Task task;
     task.type = TaskType::TX_BEGIN_REQUEST;
+    task.priority = req.priority();
     Task response = co_await WaitForResponse(std::move(task));
-    std::printf("[Core %d] <<< BEGIN_TX tx_id=%lu success=%s\n", core_id_, response.tx_id,
-                response.success ? "yes" : "no");
+    std::printf("[Core %d] <<< BEGIN_TX tx_id=%lu success=%s priority=%u\n", core_id_, response.tx_id,
+                response.success ? "yes" : "no", response.priority);
     db::BeginTxResponse grpc_resp;
     grpc_resp.set_tx_id(response.tx_id);
     grpc_resp.set_snapshot_ts(response.snapshot_ts);
     grpc_resp.set_success(response.success);
+    grpc_resp.set_priority(response.priority);
     if (!response.error_message.empty())
       grpc_resp.set_error(response.error_message);
     co_await rpc.finish(grpc_resp, grpc::Status::OK, boost::asio::use_awaitable);
@@ -201,6 +204,7 @@ private:
     if (response.found)
       grpc_resp.set_value(ToProtoBytes(response.value));
     grpc_resp.set_success(response.success);
+    grpc_resp.set_retry_after_ms(response.retry_after_ms);
     if (!response.error_message.empty())
       grpc_resp.set_error(response.error_message);
     co_await rpc.finish(grpc_resp, grpc::Status::OK, boost::asio::use_awaitable);

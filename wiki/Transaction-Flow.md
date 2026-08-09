@@ -85,12 +85,13 @@ sequenceDiagram
 
 ### 1. Begin
 
-Клиент вызывает `BeginTransaction`. [TxCoordinator](Transaction-TxCoordinator) на Core 0:
+Клиент вызывает `BeginTransaction` (опционально с `priority`). [TxCoordinator](Transaction-TxCoordinator) на Core 0:
 - назначает `tx_id` (автоинкремент);
 - назначает `snapshot_ts` (автоинкремент);
+- назначает `priority` (из запроса, либо `kTxPriorityNormal` по умолчанию — см. [[Design-MVCC-Transactions]]);
 - создаёт `TxRecord` со state=ACTIVE;
 - пишет `TX_BEGIN` в WAL Core 0;
-- возвращает `tx_id` и `snapshot_ts` клиенту.
+- возвращает `tx_id`, `snapshot_ts` и фактически назначенный `priority` клиенту.
 
 ### 2. Execute
 
@@ -101,10 +102,10 @@ sequenceDiagram
 - Видит committed версии ≤ snapshot_ts;
 - Не видит чужие intent'ы.
 
-**SET**: маршрутизируется на owner core → `WriteIntent(key, value, tx_id)`:
+**SET**: TxCoordinator подставляет `priority` транзакции в задачу и маршрутизирует на owner core → `WriteIntent(key, value, tx_id)`:
 - Создаёт uncommitted intent;
-- Если другая транзакция уже имеет intent → `WRITE_CONFLICT`;
-- INTENT записывается в WAL;
+- Если другая транзакция уже имеет intent → `WRITE_CONFLICT`, owner core считает `retry_after_ms` по streak-у конфликтов и `priority` (см. ниже);
+- INTENT записывается в WAL (только при успехе);
 - TxCoordinator добавляет ядро в `participant_cores`.
 
 ### 3. Commit — Prepare phase
@@ -159,10 +160,12 @@ sequenceDiagram
 ```
 Tx1: WriteIntent("key", "A", tx_id=1) → OK
 Tx2: WriteIntent("key", "B", tx_id=2) → WRITE_CONFLICT
-     → Execute response: success=false, error="write_write_conflict"
+     → Execute response: success=false, error="write_write_conflict", retry_after_ms=N
 ```
 
-Обнаруживается **сразу** при Execute, не при Commit.
+Обнаруживается **сразу** при Execute, не при Commit. Решается по no-wait — первый intent побеждает, возраст/приоритет транзакции исход не меняет.
+
+`retry_after_ms` — подсказка клиенту (экспоненциальный backoff с jitter, масштабируемый по `priority` транзакции), а не гарантия того, что повтор пройдёт успешно. Подробности и границы этого механизма — [[Design-MVCC-Transactions]], раздел «Priority + retry-backoff».
 
 ### Stale transaction
 

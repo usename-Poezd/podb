@@ -106,6 +106,10 @@ struct Task {
   uint64_t snapshot_ts{0};       // snapshot timestamp для Snapshot Isolation
   uint64_t commit_ts{0};         // Timestamp фиксации для finalize операций
   std::string error_message;     // Детали ошибки (tx_not_found, tx_not_active и т.д.)
+  uint32_t priority{0};          // Приоритет tx: 0 = не задан клиентом (Begin
+                                  // назначит default); в Execute-запросе —
+                                  // приоритет владельца tx, для backoff-расчёта
+  uint32_t retry_after_ms{0};    // Backoff-хинт при write_write_conflict
 
   // Helper methods
   bool IsRequest() const noexcept {

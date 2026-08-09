@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <utility>
 
+#include "core/backoff.h"
 #include "core/task.h"
 #include "storage/storage_engine.h"
 #include "storage/versioned_value.h"
@@ -59,6 +60,7 @@ public:
       BinaryValue value_copy = request.value;
       // MVCC запись intent
       auto result = storage_.WriteIntent(request.key, std::move(request.value), request.tx_id);
+      const uint32_t conflict_streak = storage_.NoteWriteIntentOutcome(request.tx_id, result);
       if (result == WriteIntentResult::OK && wal_) {
         WalRecord rec;
         rec.type = WalRecordType::INTENT;
@@ -80,6 +82,7 @@ public:
       } else {
         response.success = false;
         response.error_message = "write_write_conflict";
+        response.retry_after_ms = ComputeBackoffMs(conflict_streak, request.priority);
       }
       break;
     }

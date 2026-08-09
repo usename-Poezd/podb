@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "core/backoff.h"
 #include "core/clock.h"
 #include "core/task.h"
 #include "router/router.h"
@@ -31,6 +32,9 @@ struct TxRecord {
   uint64_t created_ts{0};
   uint64_t last_heartbeat_ts{0};
   std::unordered_set<int> participant_cores;  // Cores с intents для этой tx
+  // Приоритет tx: влияет только на retry-backoff при write-write конфликтах
+  // (core/backoff.h), не даёт права вытеснить чужой intent.
+  uint32_t priority{kTxPriorityNormal};
   Clock::TimePoint created_time{};
   Clock::TimePoint last_heartbeat_time{};
 };

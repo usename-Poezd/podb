@@ -44,10 +44,11 @@ class TxCoordinatorTest : public ::testing::Test {
     return last_response_.tx_id;
   }
 
-  void SendBeginWithRequestId(uint64_t request_id) {
+  void SendBeginWithRequestId(uint64_t request_id, uint32_t priority = 0) {
     Task task;
     task.type = TaskType::TX_BEGIN_REQUEST;
     task.request_id = request_id;
+    task.priority = priority;
     coordinator_->HandleControl(std::move(task));
   }
 
@@ -126,9 +127,14 @@ class TxCoordinatorRoutingTest : public ::testing::Test {
   }
 
   uint64_t DoBegin() {
+    return DoBeginWithPriority(0);
+  }
+
+  uint64_t DoBeginWithPriority(uint32_t priority) {
     Task task;
     task.type = TaskType::TX_BEGIN_REQUEST;
     task.request_id = next_req_id_++;
+    task.priority = priority;
     coordinator_->HandleControl(std::move(task));
     return last_response_.tx_id;
   }
@@ -210,6 +216,18 @@ TEST_F(TxCoordinatorTest, BeginTx_StateIsActive) {
   EXPECT_GT(LastResponse().tx_id, 0U);
   EXPECT_GT(LastResponse().snapshot_ts, 0U);
   EXPECT_TRUE(LastResponse().error_message.empty());
+}
+
+TEST_F(TxCoordinatorTest, BeginTx_NoExplicitPriority_DefaultsToNormal) {
+  SendBeginWithRequestId(100);
+
+  EXPECT_EQ(LastResponse().priority, kTxPriorityNormal);
+}
+
+TEST_F(TxCoordinatorTest, BeginTx_ExplicitPriority_IsEchoedBack) {
+  SendBeginWithRequestId(100, kTxPriorityHigh);
+
+  EXPECT_EQ(LastResponse().priority, kTxPriorityHigh);
 }
 
 TEST_F(TxCoordinatorTest, CommitActiveTx_Succeeds) {
@@ -294,6 +312,15 @@ TEST_F(TxCoordinatorRoutingTest, ExecuteOnActiveTx_Forwards) {
             BinaryValue({static_cast<std::byte>('v'),
                          static_cast<std::byte>('1')}));
   EXPECT_EQ(ForwardedTask().reply_to_core, 7);
+  EXPECT_EQ(ForwardedTask().priority, kTxPriorityNormal);
+}
+
+TEST_F(TxCoordinatorRoutingTest, ExecuteOnActiveTx_ForwardsExplicitPriority) {
+  const uint64_t tx_id = DoBeginWithPriority(kTxPriorityHigh);
+
+  SendExecuteSetToCoreSeven(tx_id);
+
+  EXPECT_EQ(ForwardedTask().priority, kTxPriorityHigh);
 }
 
 TEST_F(TxCoordinatorTest, CommitNoParticipants_ImmediateResponse) {

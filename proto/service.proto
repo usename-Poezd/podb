@@ -51,6 +51,10 @@ message GetResponse {
 // --- Сообщения для BeginTransaction ---
 message BeginTxRequest {
     string isolation_level = 1; // "SNAPSHOT" по умолчанию
+    uint32 priority = 2;        // 0 = назначить приоритет по умолчанию (NORMAL);
+                                 // используется только для масштабирования
+                                 // retry-backoff при write-write конфликтах,
+                                 // не даёт права вытеснить чужой intent
 }
 
 message BeginTxResponse {
@@ -58,6 +62,7 @@ message BeginTxResponse {
     uint64 snapshot_ts = 2;
     bool success = 3;
     string error = 4;
+    uint32 priority = 5; // фактически назначенный приоритет транзакции
 }
 
 // --- Сообщения для Execute ---
@@ -74,6 +79,7 @@ message ExecuteResponse {
     bytes value = 3;        // Для GET: значение
     bool success = 4;
     string error = 5;
+    uint32 retry_after_ms = 6; // backoff-хинт при error = "write_write_conflict", иначе 0
 }
 
 // --- Сообщения для Commit ---

@@ -111,6 +111,11 @@ struct Task {
 
     // --- Ошибки ---
     std::string error_message; // Детали ошибки (пустая = нет ошибки)
+
+    // --- Priority / retry-backoff (write-write конфликты) ---
+    uint32_t priority = 0;       // В Begin-запросе: 0 = не задан (coordinator назначит default).
+                                  // В Execute-запросе на owner core: приоритет владельца tx.
+    uint32_t retry_after_ms = 0; // Backoff-хинт при write_write_conflict, иначе 0.
 };
 ```
 
@@ -145,7 +150,7 @@ const char* TaskTypeName(TaskType t) noexcept;
 |----------|---------------|
 | Non-tx GET | `type`, `key`, `request_id`, `reply_to_core` |
 | Non-tx SET | `type`, `key`, `value`, `request_id`, `reply_to_core` |
-| Tx Execute | `type`, `key`, `value`, `tx_id`, `snapshot_ts`, `request_id`, `reply_to_core` |
+| Tx Execute | `type`, `key`, `value`, `tx_id`, `snapshot_ts`, `priority`, `request_id`, `reply_to_core` (+`retry_after_ms` в response при конфликте) |
 | Tx Prepare | `type`, `tx_id`, `reply_to_core` |
 | Tx Finalize | `type`, `tx_id`, `commit_ts`, `reply_to_core` |
 | GC | `type`, `snapshot_ts` (используется как watermark) |

@@ -113,6 +113,7 @@ public:
 
   /// Финализация commit: все intents транзакции становятся committed версиями.
   void CommitTransaction(TxId tx_id, CommitTs commit_ts) {
+    conflict_streaks_.erase(tx_id.Value());
     const auto tx_it = tx_intents_.find(tx_id.Value());
     if (tx_it == tx_intents_.end()) {
       return;
@@ -139,8 +140,21 @@ public:
     tx_read_set_.erase(tx_id.Value());
   }
 
+  /// Учитывает исход WriteIntent для расчёта retry-backoff (см. core/backoff.h):
+  /// увеличивает streak подряд идущих write-write конфликтов для tx_id,
+  /// сбрасывает его при успешной записи intent-а. Не влияет на исход
+  /// самого конфликта — WriteIntent остаётся no-wait.
+  uint32_t NoteWriteIntentOutcome(uint64_t tx_id, WriteIntentResult result) {
+    if (result == WriteIntentResult::OK) {
+      conflict_streaks_.erase(tx_id);
+      return 0;
+    }
+    return ++conflict_streaks_[tx_id];
+  }
+
   /// Финализация abort: удалить все intents транзакции из version chains.
   void AbortTransaction(uint64_t tx_id) {
+    conflict_streaks_.erase(tx_id);
     const auto tx_it = tx_intents_.find(tx_id);
     if (tx_it == tx_intents_.end()) {
       return;
@@ -164,6 +178,7 @@ public:
 
     tx_intents_.erase(tx_it);
     tx_read_set_.erase(tx_id);
+    conflict_streaks_.erase(tx_id);
   }
 
   [[nodiscard]] const std::unordered_set<std::string> *GetReadSet(uint64_t tx_id) const {
@@ -200,6 +215,7 @@ public:
     versions_.clear();
     tx_intents_.clear();
     tx_read_set_.clear();
+    conflict_streaks_.clear();
   }
 
   [[nodiscard]] PrepareResult ValidatePrepare(uint64_t tx_id) const {
@@ -286,6 +302,8 @@ private:
   // Индекс: tx_id -> набор ключей с intents для быстрого commit/abort.
   std::unordered_map<uint64_t, std::unordered_set<std::string>> tx_intents_;
   mutable std::unordered_map<uint64_t, std::unordered_set<std::string>> tx_read_set_;
+  // tx_id -> число подряд идущих write-write конфликтов (для retry-backoff).
+  std::unordered_map<uint64_t, uint32_t> conflict_streaks_;
 };
 
 }  // namespace db

@@ -112,6 +112,75 @@ TEST_F(StorageMvccTest, AbortTransaction_RemovesIntents) {
   EXPECT_FALSE(storage_.MvccGet("k", 100, 2).found);
 }
 
+TEST_F(StorageMvccTest, NoteWriteIntentOutcome_Success_ReturnsZeroStreak) {
+  const auto result = storage_.WriteIntent("k", MakeValue("v"), 1);
+
+  EXPECT_EQ(storage_.NoteWriteIntentOutcome(1, result), 0u);
+}
+
+TEST_F(StorageMvccTest, NoteWriteIntentOutcome_ConflictStreak_Increments) {
+  ASSERT_EQ(storage_.WriteIntent("k", MakeValue("holder"), 1), WriteIntentResult::OK);
+
+  const auto conflict1 = storage_.WriteIntent("k", MakeValue("v2"), 2);
+  EXPECT_EQ(storage_.NoteWriteIntentOutcome(2, conflict1), 1u);
+
+  const auto conflict2 = storage_.WriteIntent("k", MakeValue("v2"), 2);
+  EXPECT_EQ(storage_.NoteWriteIntentOutcome(2, conflict2), 2u);
+
+  const auto conflict3 = storage_.WriteIntent("k", MakeValue("v2"), 2);
+  EXPECT_EQ(storage_.NoteWriteIntentOutcome(2, conflict3), 3u);
+}
+
+TEST_F(StorageMvccTest, NoteWriteIntentOutcome_SuccessAfterConflicts_ResetsStreak) {
+  ASSERT_EQ(storage_.WriteIntent("k", MakeValue("holder"), 1), WriteIntentResult::OK);
+  const auto conflict = storage_.WriteIntent("k", MakeValue("v2"), 2);
+  ASSERT_EQ(storage_.NoteWriteIntentOutcome(2, conflict), 1u);
+
+  storage_.AbortTransaction(1);
+  const auto success = storage_.WriteIntent("k", MakeValue("v2"), 2);
+  ASSERT_EQ(success, WriteIntentResult::OK);
+
+  EXPECT_EQ(storage_.NoteWriteIntentOutcome(2, success), 0u);
+}
+
+TEST_F(StorageMvccTest, NoteWriteIntentOutcome_StreaksIndependentPerTx) {
+  ASSERT_EQ(storage_.WriteIntent("k", MakeValue("holder"), 1), WriteIntentResult::OK);
+
+  const auto conflict_a = storage_.WriteIntent("k", MakeValue("va"), 2);
+  const auto conflict_b = storage_.WriteIntent("k", MakeValue("vb"), 3);
+  storage_.NoteWriteIntentOutcome(2, conflict_a);
+  storage_.NoteWriteIntentOutcome(2, conflict_a);
+  storage_.NoteWriteIntentOutcome(3, conflict_b);
+
+  EXPECT_EQ(storage_.NoteWriteIntentOutcome(2, storage_.WriteIntent("k", MakeValue("va"), 2)), 3u);
+  EXPECT_EQ(storage_.NoteWriteIntentOutcome(3, storage_.WriteIntent("k", MakeValue("vb"), 3)), 2u);
+}
+
+TEST_F(StorageMvccTest, NoteWriteIntentOutcome_CommitClearsStreak) {
+  ASSERT_EQ(storage_.WriteIntent("k1", MakeValue("v"), 1), WriteIntentResult::OK);
+  const auto conflict = storage_.WriteIntent("k1", MakeValue("v2"), 2);
+  ASSERT_EQ(storage_.NoteWriteIntentOutcome(2, conflict), 1u);
+  // Успешная запись intent-а на другом ключе не должна проходить через
+  // NoteWriteIntentOutcome в этом тесте — иначе она сама сбросит streak,
+  // и тест перестанет различать "сбросил commit" vs "сбросил success".
+  ASSERT_EQ(storage_.WriteIntent("k2", MakeValue("v"), 2), WriteIntentResult::OK);
+
+  storage_.CommitTransaction(2, 10);
+
+  // Если бы commit не очистил streak, следующий инкремент дал бы 2, а не 1.
+  EXPECT_EQ(storage_.NoteWriteIntentOutcome(2, WriteIntentResult::WRITE_CONFLICT), 1u);
+}
+
+TEST_F(StorageMvccTest, NoteWriteIntentOutcome_AbortClearsStreak) {
+  ASSERT_EQ(storage_.WriteIntent("k", MakeValue("v"), 1), WriteIntentResult::OK);
+  const auto conflict = storage_.WriteIntent("k", MakeValue("v2"), 2);
+  ASSERT_EQ(storage_.NoteWriteIntentOutcome(2, conflict), 1u);
+
+  storage_.AbortTransaction(2);
+
+  EXPECT_EQ(storage_.NoteWriteIntentOutcome(2, WriteIntentResult::WRITE_CONFLICT), 1u);
+}
+
 TEST_F(StorageMvccTest, MvccGet_LatestCommittedVersion) {
   ASSERT_EQ(storage_.WriteIntent("k", MakeValue("v50"), 1), WriteIntentResult::OK);
   storage_.CommitTransaction(1, 50);

@@ -165,15 +165,31 @@ enum class WriteIntentResult : uint8_t {
 };
 ```
 
+### Учёт конфликтов для retry-backoff
+
+```cpp
+uint32_t NoteWriteIntentOutcome(uint64_t tx_id, WriteIntentResult result);
+```
+
+Вызывается вызывающей стороной (`KvExecutor`) сразу после `WriteIntent`. Хранит per-tx счётчик `conflict_streaks_["tx_id"]` подряд идущих write-write конфликтов:
+- `result == OK` → счётчик для `tx_id` сбрасывается, возвращается `0`;
+- `result == WRITE_CONFLICT` → счётчик инкрементируется и возвращается новое значение.
+
+Значение используется `KvExecutor` для расчёта `retry_after_ms` (`core/backoff.h::ComputeBackoffMs`) — см. раздел «Priority + retry-backoff» в [[Design-MVCC-Transactions]]. Сам конфликт это **не разрешает** — `WriteIntent` остаётся чистым no-wait, счётчик влияет только на подсказку backoff, возвращаемую клиенту.
+
+Счётчик для `tx_id` очищается также в `CommitTransaction` и `AbortTransaction` (до early-return по отсутствию intent'ов транзакции — иначе tx, которая ни разу не получила ни одного intent-а, оставляла бы висящую запись в map навсегда).
+
 ### Финализация транзакций
 
 ```cpp
 void CommitTransaction(uint64_t tx_id, uint64_t commit_ts);
 // Промоутит все intent'ы транзакции в committed versions с commit_ts.
 // is_intent → false, commit_ts → заданный, tx_id → 0.
+// Также очищает conflict_streaks_[tx_id].
 
 void AbortTransaction(uint64_t tx_id);
 // Удаляет все intent'ы транзакции из version chains.
+// Также очищает conflict_streaks_[tx_id].
 ```
 
 ### OCC-валидация (2PC Prepare)

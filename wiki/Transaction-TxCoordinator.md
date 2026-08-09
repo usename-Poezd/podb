@@ -16,6 +16,7 @@ key C → Core 2
 
 Нужен единый компонент, который:
 - создаёт `tx_id` и `snapshot_ts`;
+- назначает `priority` (явный из запроса или `kTxPriorityNormal` по умолчанию) — используется только для retry-backoff подсказки при write-write конфликтах, см. [[Design-MVCC-Transactions]];
 - отслеживает участников (participant cores);
 - координирует 2PC: собирает голоса, принимает решение, рассылает finalize;
 - управляет stale транзакциями (lease expiration, stuck detection).
@@ -58,6 +59,7 @@ struct TxRecord {
     uint64_t commit_ts;
     TxState state;
     std::unordered_set<int> participant_cores;  // Ядра с intent'ами
+    uint32_t priority{kTxPriorityNormal};  // Только для retry-backoff, не даёт права вытеснить intent
     Clock::TimePoint created_time;
     Clock::TimePoint last_heartbeat_time;
 };
@@ -196,7 +198,7 @@ public:
     // Dispatch: BEGIN/COMMIT/ROLLBACK/HEARTBEAT
 
     void HandleExecute(Task task);
-    // TX_EXECUTE_GET/SET: validate tx → add snapshot_ts → route
+    // TX_EXECUTE_GET/SET: validate tx → add snapshot_ts + priority → route
 
     void HandlePrepareResponse(Task task);
     // Собирает YES/NO голоса → решение COMMIT/ABORT

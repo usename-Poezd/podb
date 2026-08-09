@@ -26,9 +26,10 @@ flowchart TD
 
     TYPE -->|TX_EXECUTE_GET| MVCC_GET["storage_.MvccGet(key, snapshot_ts, tx_id)<br/>→ TX_EXECUTE_RESPONSE"]
     TYPE -->|TX_EXECUTE_SET| MVCC_SET["storage_.WriteIntent(key, value, tx_id)"]
-    MVCC_SET --> WI_OK{"WriteIntent<br/>result?"}
+    MVCC_SET --> NOTE["storage_.NoteWriteIntentOutcome(tx_id, result)<br/>→ conflict_streak"]
+    NOTE --> WI_OK{"WriteIntent<br/>result?"}
     WI_OK -->|OK| WAL_INTENT["wal_.Append(INTENT)<br/>→ TX_EXECUTE_RESPONSE success"]
-    WI_OK -->|WRITE_CONFLICT| CONFLICT["→ TX_EXECUTE_RESPONSE<br/>error='write_write_conflict'"]
+    WI_OK -->|WRITE_CONFLICT| CONFLICT["ComputeBackoffMs(streak, request.priority)<br/>→ TX_EXECUTE_RESPONSE<br/>error='write_write_conflict'<br/>retry_after_ms=..."]
 
     TYPE -->|TX_PREPARE_REQUEST| PREPARE["storage_.ValidatePrepare(tx_id)"]
     PREPARE --> PREP_OK{"can_commit?"}
@@ -62,6 +63,18 @@ flowchart TD
 - `key` — echo обратно;
 - `tx_id` — для транзакционных операций.
 
+### Retry-backoff при write-write конфликте
+
+При `WRITE_CONFLICT` executor не просто возвращает ошибку — он подсказывает клиенту, сколько подождать перед повтором:
+
+1. `storage_.NoteWriteIntentOutcome(request.tx_id, result)` — инкрементирует per-tx счётчик подряд идущих конфликтов (`conflict_streak`) на этом owner-core;
+2. `ComputeBackoffMs(conflict_streak, request.priority)` (`core/backoff.h`) — экспоненциальный backoff с jitter, обратно пропорциональный `priority` транзакции (см. [[Design-MVCC-Transactions]], раздел «Priority + retry-backoff»);
+3. Результат кладётся в `response.retry_after_ms` → доходит до клиента через `ExecuteResponse.retry_after_ms`.
+
+`request.priority` заполняется координатором в `TxCoordinator::HandleExecute` из `TxRecord.priority` перед маршрутизацией — сам KvExecutor приоритет не назначает, только использует.
+
+Это **не меняет** исход самого конфликта — `WriteIntent` остаётся no-wait. Backoff — это только подсказка для клиента, снижающая вероятность систематического livelock, а не гарантия прогресса.
+
 ## Публичный API
 
 ```cpp
@@ -83,7 +96,7 @@ public:
 [Core 2] EXEC SET "user:1" size=64 → OK reply→Core 0
 [Core 1] EXEC GET "user:1" → FOUND reply→Core 0
 [Core 3] EXEC TX_SET "key" tx=5 → OK reply→Core 0
-[Core 3] EXEC TX_SET "key" tx=7 → CONFLICT reply→Core 0
+[Core 3] EXEC TX_SET "key" tx=7 → CONFLICT reply→Core 0  (retry_after_ms в response, не в логе)
 [Core 1] EXEC PREPARE tx=5 → YES
 [Core 1] EXEC FIN_COMMIT tx=5 commit_ts=150
 [Core 2] GC watermark=100 removed=3
