@@ -88,6 +88,12 @@ boost::asio::awaitable<Task> WaitForResponse(Task task) {
 
 Все обработчики регистрируются через `agrpc::register_awaitable_rpc_handler` с `boost::asio::detached`.
 
+Каждый обработчик логирует запрос/ответ (`>>> GET "key"`, `<<< SET ok=yes`, ...) через `PODB_VLOG(...)`
+(`src/core/verbose_log.h`) — по умолчанию выключено, включается флагом `--verbose` у `db_engine`. Это не бесплатная
+отладочная печать: `perf`-профилирование показало, что безусловный `printf` на каждый RPC отъедал ~3% CPU
+ingress-потока (Core 0), отсюда и рантайм-гейтинг вместо простого удаления — трейсинг иногда нужен, но не должен
+стоить всем остальным throughput. Подробнее — [Build-Deploy § Логирование](Build-Deploy#логирование-verbose).
+
 ### ProtoConvert — граница протокола
 
 ```cpp

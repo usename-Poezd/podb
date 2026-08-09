@@ -13,6 +13,7 @@
 #include "storage/storage_engine.h"
 #include "core/worker.h"
 #include "core/core_dispatcher.h"
+#include "core/verbose_log.h"
 #include "transaction/tx_coordinator.h"
 
 #include <filesystem>
@@ -30,7 +31,11 @@ int main(int argc, char *argv[]) {
         "port,p", po::value<int>()->default_value(9906), "TCP port for gRPC")(
         "data-dir,d", po::value<std::string>()->default_value("./data"), "Data directory for WAL/snapshots")(
         "repartition-on-recovery", po::bool_switch()->default_value(false),
-        "Allow offline repartition when --cores differs from stored topology");
+        "Allow offline repartition when --cores differs from stored topology")(
+        "verbose,v", po::bool_switch()->default_value(false),
+        "Enable per-request debug logging (>>>/<<</ROUT/EXEC traces). Off by "
+        "default — this is a real hot-path cost (~3% Core 0 CPU per perf profiling), "
+        "not just noise.");
 
     po::variables_map vm;
     po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -40,6 +45,10 @@ int main(int argc, char *argv[]) {
       std::cout << desc << "\n";
       return 0;
     }
+
+    // Выставляем до старта worker-потоков — дальше только читается, без
+    // синхронизации (см. src/core/verbose_log.h).
+    g_verbose_logging = vm["verbose"].as<bool>();
 
     int cores = 1;
     if (vm.count("cores")) {
@@ -221,6 +230,27 @@ int main(int argc, char *argv[]) {
     schedule_reap();
 
     std::cout << "[Main] Reaper timer started (1s interval).\n";
+
+    // Group-commit flush timer: батчит несколько pending commit-decision
+    // WAL-записей в один fdatasync() вместо одного на транзакцию
+    // (см. TxCoordinator::FlushPendingCommits).
+    constexpr auto kGroupCommitInterval = std::chrono::milliseconds(1);
+    auto commit_flush_timer = std::make_shared<boost::asio::steady_timer>(workers[0]->GetIoContext());
+    std::function<void()> schedule_commit_flush;
+
+    schedule_commit_flush = [commit_flush_timer, &tx_coordinator, &schedule_commit_flush,
+                              kGroupCommitInterval]() {
+      commit_flush_timer->expires_after(kGroupCommitInterval);
+      commit_flush_timer->async_wait(
+          [&, commit_flush_timer](const boost::system::error_code &ec) {
+            if (ec) return;
+            tx_coordinator->FlushPendingCommits();
+            schedule_commit_flush();
+          });
+    };
+    schedule_commit_flush();
+
+    std::cout << "[Main] Group-commit flush timer started (1ms interval).\n";
 
     boost::asio::signal_set signals(workers[0]->GetIoContext(), SIGINT, SIGTERM);
     signals.async_wait([&](const boost::system::error_code &error, int signal_number) {

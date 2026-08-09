@@ -40,6 +40,7 @@ make docker-run         # Запуск с --privileged (для CPU affinity)
 | `--port` | `-p` | int | `9906` | TCP-порт для gRPC-сервера |
 | `--data-dir` | `-d` | string | `./data` | Директория для WAL-файлов и snapshot'ов |
 | `--repartition-on-recovery` | — | bool | `false` | Разрешить offline repartitioning при изменении `--cores` |
+| `--verbose` | `-v` | bool | `false` | Включить per-request debug-логи (`>>>`/`<<<`/`ROUT`/`EXEC`, см. [Логирование](#логирование-verbose)) |
 | `--help` | `-h` | flag | — | Показать справку |
 
 ### Примеры запуска
@@ -53,14 +54,54 @@ make docker-run         # Запуск с --privileged (для CPU affinity)
 
 # С разрешением repartitioning при смене числа ядер
 ./build/db_engine --cores 6 --data-dir ./data --repartition-on-recovery
+
+# С трейсингом каждого запроса (для отладки, не для продакшна)
+./build/db_engine --cores 2 --verbose
 ```
+
+## Логирование (`--verbose`)
+
+По умолчанию `db_engine` не логирует отдельные запросы — `--verbose` включает
+per-request debug-трейсы (`>>> GET`, `<<< SET`, `ROUT ... → Core N`, `EXEC
+PREPARE tx=...` и т.п.) во всех hot-path точках: `GrpcHandler` (каждый
+Get/Set/Begin/Execute/Commit/Rollback/Heartbeat), `Router` (каждая
+маршрутизация между ядрами) и `KvExecutor` (каждое исполнение на core).
+
+Это не бесплатно: нагрузочное тестирование (`bench/`) и `perf`-профилирование
+показали, что безусловный `printf` в этих местах отъедал ~2.8% CPU одного
+ingress-потока (Core 0) на каждый RPC — сам вызов плюс цепочка
+`__vfprintf_internal → write()`. Поэтому логирование гейтится единым
+рантайм-флагом `db::g_verbose_logging` (`src/core/verbose_log.h`),
+выставляемым один раз в `main.cpp` до старта worker-потоков (после этого
+только читается — синхронизация не нужна, happens-before через
+`std::thread::start()`). Все вызовы обёрнуты макросом `PODB_VLOG(...)`
+вместо голого `std::printf(...)`:
+
+```cpp
+#define PODB_VLOG(...)             \
+  do {                             \
+    if (::db::g_verbose_logging) { \
+      std::printf(__VA_ARGS__);    \
+    }                              \
+  } while (0)
+```
+
+Макрос (а не функция-обёртка) — намеренный выбор: при выключенном флаге
+аргументы формата вообще не вычисляются, а не просто отбрасываются после
+вычисления. При `--verbose` не заданном стоимость в hot path — одна проверка
+`bool`, не пропуски операции ввода-вывода.
+
+Используйте `--verbose` только для отладки на дев-стенде — на реальной
+нагрузке (сотни-тысячи RPC/с) он снова создаёт тот же ~3% overhead и заливает
+stdout построчно (`bench/scripts/scale_by_cores.sh` поэтому всегда
+перенаправляет вывод `db_engine` в файл, а не в терминал).
 
 ## Структура CMake-модулей
 
 | Библиотека | Содержимое | Зависимости |
 |-----------|-----------|-------------|
 | `db_api` | Generated `.pb.cc` / `.grpc.pb.cc` | gRPC++, protobuf |
-| `db_core` | Worker, Task, SlabAllocator, CoreDispatcher, Clock, Types | asio-grpc, concurrentqueue, jemalloc |
+| `db_core` | Worker, Task, SlabAllocator, CoreDispatcher, Clock, Types, VerboseLog (header-only) | asio-grpc, concurrentqueue, jemalloc |
 | `db_async` | RequestTracker | db_core |
 | `db_router` | Router | db_core, db_storage |
 | `db_execution` | KvExecutor | db_storage, db_core, db_wal |

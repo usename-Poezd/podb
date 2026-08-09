@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <utility>
 
+#include "core/verbose_log.h"
 #include "core/worker.h"
 
 namespace db {
@@ -23,7 +24,7 @@ void Router::RouteTask(Task task) {
   }
 
   if (task.IsTxFinalize() || task.IsTxPrepare()) {
-    std::printf("[Core %d] ROUT %s tx=%lu → local (direct-to-core)\n", local_core_id_,
+    PODB_VLOG("[Core %d] ROUT %s tx=%lu → local (direct-to-core)\n", local_core_id_,
                 TaskTypeName(task.type), task.tx_id);
     local_execute_(std::move(task));
     return;
@@ -32,11 +33,11 @@ void Router::RouteTask(Task task) {
   const int target = RouteKey(task.key);
   const uint32_t rid = static_cast<uint32_t>(task.request_id & 0xFFFFFFFF);
   if (target == local_core_id_) {
-    std::printf("[Core %d] ROUT %s \"%.20s\" rid=%-4u → local\n", local_core_id_,
+    PODB_VLOG("[Core %d] ROUT %s \"%.20s\" rid=%-4u → local\n", local_core_id_,
                 TaskTypeName(task.type), task.key.c_str(), rid);
     local_execute_(std::move(task));
   } else {
-    std::printf("[Core %d] ROUT %s \"%.20s\" rid=%-4u → Core %d\n", local_core_id_,
+    PODB_VLOG("[Core %d] ROUT %s \"%.20s\" rid=%-4u → Core %d\n", local_core_id_,
                 TaskTypeName(task.type), task.key.c_str(), rid, target);
     all_workers_[target]->PushTask(std::move(task));
   }
@@ -44,10 +45,10 @@ void Router::RouteTask(Task task) {
 
 void Router::SendToCore(int target_core, Task task) {
   if (target_core == local_core_id_) {
-    std::printf("[Core %d] SEND local FIN  tx=%lu\n", local_core_id_, task.tx_id);
+    PODB_VLOG("[Core %d] SEND local FIN  tx=%lu\n", local_core_id_, task.tx_id);
     local_execute_(std::move(task));
   } else if (target_core >= 0 && target_core < num_cores_) {
-    std::printf("[Core %d] SEND → Core %d FIN  tx=%lu\n", local_core_id_, target_core, task.tx_id);
+    PODB_VLOG("[Core %d] SEND → Core %d FIN  tx=%lu\n", local_core_id_, target_core, task.tx_id);
     all_workers_[target_core]->PushTask(std::move(task));
   }
 }

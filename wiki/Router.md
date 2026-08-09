@@ -50,6 +50,10 @@ void SendToCore(int target_core, Task task);
 
 Используется `TxCoordinator` для отправки `TX_PREPARE` и `TX_FINALIZE` на конкретные participant cores, минуя key-based routing.
 
+`RouteTask`/`SendToCore` логируют каждую маршрутизацию (`ROUT ... → Core N`, `SEND local FIN tx=...`) через
+`PODB_VLOG(...)` (`src/core/verbose_log.h`) — выключено по умолчанию, включается флагом `--verbose` у `db_engine`
+(см. [Build-Deploy § Логирование](Build-Deploy#логирование-verbose)).
+
 ## Публичный API
 
 ```cpp

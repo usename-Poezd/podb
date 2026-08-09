@@ -102,6 +102,11 @@ public:
 [Core 2] GC watermark=100 removed=3
 ```
 
+Эти строки печатаются через `PODB_VLOG(...)` (`src/core/verbose_log.h`), а не голый `std::printf` — по умолчанию
+выключены (флаг `--verbose` у `db_engine`, см. [Build-Deploy § Логирование](Build-Deploy#логирование-verbose)).
+Безусловный `printf` на каждый Execute был реальным hot-path overhead'ом (~3% Core 0 CPU по `perf`-профилю), не
+просто отладочным шумом.
+
 ## Связи с другими модулями
 
 | Модуль | Взаимодействие |

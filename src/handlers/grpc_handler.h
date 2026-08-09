@@ -24,6 +24,7 @@
 #include "api/service.pb.h"
 #include "async/request_tracker.h"
 #include "core/task.h"
+#include "core/verbose_log.h"
 #include "handlers/proto_convert.h"
 
 namespace db {
@@ -127,12 +128,12 @@ private:
   }
 
   boost::asio::awaitable<void> HandleGet(GetRPC &rpc, db::GetRequest &req) {
-    std::printf("[Core %d] >>> GET  \"%.20s\"\n", core_id_, req.key().c_str());
+    PODB_VLOG("[Core %d] >>> GET  \"%.20s\"\n", core_id_, req.key().c_str());
     Task task;
     task.type = TaskType::GET_REQUEST;
     task.key = req.key();
     Task response = co_await WaitForResponse(std::move(task));
-    std::printf("[Core %d] <<< GET  \"%.20s\" found=%s\n", core_id_, response.key.c_str(),
+    PODB_VLOG("[Core %d] <<< GET  \"%.20s\" found=%s\n", core_id_, response.key.c_str(),
                 response.found ? "yes" : "no");
     db::GetResponse grpc_resp;
     grpc_resp.set_found(response.found);
@@ -142,14 +143,14 @@ private:
   }
 
   boost::asio::awaitable<void> HandleSet(SetRPC &rpc, db::SetRequest &req) {
-    std::printf("[Core %d] >>> SET  \"%.20s\" size=%zu\n", core_id_, req.key().c_str(),
+    PODB_VLOG("[Core %d] >>> SET  \"%.20s\" size=%zu\n", core_id_, req.key().c_str(),
                 req.value().size());
     Task task;
     task.type = TaskType::SET_REQUEST;
     task.key = req.key();
     task.value = FromProtoBytes(req.value());
     Task response = co_await WaitForResponse(std::move(task));
-    std::printf("[Core %d] <<< SET  \"%.20s\" ok=%s\n", core_id_, response.key.c_str(),
+    PODB_VLOG("[Core %d] <<< SET  \"%.20s\" ok=%s\n", core_id_, response.key.c_str(),
                 response.success ? "yes" : "no");
     db::SetResponse grpc_resp;
     grpc_resp.set_success(response.success);
@@ -157,13 +158,13 @@ private:
   }
 
   boost::asio::awaitable<void> HandleBeginTransaction(BeginTxRPC &rpc, db::BeginTxRequest &req) {
-    std::printf("[Core %d] >>> BEGIN_TX isolation=\"%s\" priority=%u\n", core_id_,
+    PODB_VLOG("[Core %d] >>> BEGIN_TX isolation=\"%s\" priority=%u\n", core_id_,
                 req.isolation_level().c_str(), req.priority());
     Task task;
     task.type = TaskType::TX_BEGIN_REQUEST;
     task.priority = req.priority();
     Task response = co_await WaitForResponse(std::move(task));
-    std::printf("[Core %d] <<< BEGIN_TX tx_id=%lu success=%s priority=%u\n", core_id_, response.tx_id,
+    PODB_VLOG("[Core %d] <<< BEGIN_TX tx_id=%lu success=%s priority=%u\n", core_id_, response.tx_id,
                 response.success ? "yes" : "no", response.priority);
     db::BeginTxResponse grpc_resp;
     grpc_resp.set_tx_id(response.tx_id);
@@ -176,7 +177,7 @@ private:
   }
 
   boost::asio::awaitable<void> HandleExecute(ExecuteRPC &rpc, db::ExecuteRequest &req) {
-    std::printf("[Core %d] >>> EXECUTE tx_id=%lu op=\"%s\" key=\"%.20s\"\n", core_id_,
+    PODB_VLOG("[Core %d] >>> EXECUTE tx_id=%lu op=\"%s\" key=\"%.20s\"\n", core_id_,
                 req.tx_id(), req.operation().c_str(), req.key().c_str());
     Task task;
     if (req.operation() == "GET") {
@@ -196,7 +197,7 @@ private:
     task.key = req.key();
     task.value = FromProtoBytes(req.value());
     Task response = co_await WaitForResponse(std::move(task));
-    std::printf("[Core %d] <<< EXECUTE tx_id=%lu success=%s\n", core_id_, response.tx_id,
+    PODB_VLOG("[Core %d] <<< EXECUTE tx_id=%lu success=%s\n", core_id_, response.tx_id,
                 response.success ? "yes" : "no");
     db::ExecuteResponse grpc_resp;
     grpc_resp.set_tx_id(response.tx_id);
@@ -211,12 +212,12 @@ private:
   }
 
   boost::asio::awaitable<void> HandleCommit(CommitRPC &rpc, db::CommitRequest &req) {
-    std::printf("[Core %d] >>> COMMIT tx_id=%lu\n", core_id_, req.tx_id());
+    PODB_VLOG("[Core %d] >>> COMMIT tx_id=%lu\n", core_id_, req.tx_id());
     Task task;
     task.type = TaskType::TX_COMMIT_REQUEST;
     task.tx_id = req.tx_id();
     Task response = co_await WaitForResponse(std::move(task));
-    std::printf("[Core %d] <<< COMMIT tx_id=%lu success=%s\n", core_id_, response.tx_id,
+    PODB_VLOG("[Core %d] <<< COMMIT tx_id=%lu success=%s\n", core_id_, response.tx_id,
                 response.success ? "yes" : "no");
     db::CommitResponse grpc_resp;
     grpc_resp.set_tx_id(response.tx_id);
@@ -227,12 +228,12 @@ private:
   }
 
   boost::asio::awaitable<void> HandleRollback(RollbackRPC &rpc, db::RollbackRequest &req) {
-    std::printf("[Core %d] >>> ROLLBACK tx_id=%lu\n", core_id_, req.tx_id());
+    PODB_VLOG("[Core %d] >>> ROLLBACK tx_id=%lu\n", core_id_, req.tx_id());
     Task task;
     task.type = TaskType::TX_ROLLBACK_REQUEST;
     task.tx_id = req.tx_id();
     Task response = co_await WaitForResponse(std::move(task));
-    std::printf("[Core %d] <<< ROLLBACK tx_id=%lu success=%s\n", core_id_, response.tx_id,
+    PODB_VLOG("[Core %d] <<< ROLLBACK tx_id=%lu success=%s\n", core_id_, response.tx_id,
                 response.success ? "yes" : "no");
     db::RollbackResponse grpc_resp;
     grpc_resp.set_tx_id(response.tx_id);
@@ -241,7 +242,7 @@ private:
   }
 
   boost::asio::awaitable<void> HandleHeartbeat(HeartbeatRPC &rpc, db::HeartbeatRequest &req) {
-    std::printf("[Core %d] >>> HEARTBEAT tx_id=%lu\n", core_id_, req.tx_id());
+    PODB_VLOG("[Core %d] >>> HEARTBEAT tx_id=%lu\n", core_id_, req.tx_id());
     Task task;
     task.type = TaskType::TX_HEARTBEAT_REQUEST;
     task.tx_id = req.tx_id();
