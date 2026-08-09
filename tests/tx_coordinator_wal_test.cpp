@@ -194,6 +194,81 @@ TEST_F(TxCoordinatorWalTest, CommitDecision_SyncBeforeFinalize) {
   EXPECT_TRUE(found_commit_decision);
 }
 
+TEST_F(TxCoordinatorWalTest, CommitDecision_DefersFinalizeUntilFlush) {
+  const uint64_t tx_id = DoBegin();
+  coordinator_->tx_table_[tx_id].participant_cores.insert(0);
+  SendCommit(tx_id);  // already forwards a TX_PREPARE_REQUEST — baseline, not zero
+  const size_t baseline = forwarded_tasks_.size();
+
+  HandlePrepareResponse(tx_id, true);
+
+  EXPECT_EQ(forwarded_tasks_.size(), baseline);  // finalize NOT forwarded yet
+  EXPECT_EQ(coordinator_->tx_table_[tx_id].state, TxState::COMMITTED);
+  EXPECT_FALSE(coordinator_->pending_finalizes_.contains(tx_id));
+
+  coordinator_->FlushPendingCommits();
+
+  ASSERT_EQ(forwarded_tasks_.size(), baseline + 1);
+  EXPECT_EQ(forwarded_tasks_.back().type, TaskType::TX_FINALIZE_COMMIT_REQUEST);
+  EXPECT_EQ(forwarded_tasks_.back().tx_id, tx_id);
+  EXPECT_GT(forwarded_tasks_.back().commit_ts, 0U);
+  EXPECT_TRUE(coordinator_->pending_finalizes_.contains(tx_id));
+}
+
+TEST_F(TxCoordinatorWalTest, MultipleCommits_BatchedIntoOneFlush) {
+  const uint64_t tx_id_a = DoBegin();
+  coordinator_->tx_table_[tx_id_a].participant_cores.insert(0);
+  SendCommit(tx_id_a);
+
+  const uint64_t tx_id_b = DoBegin();
+  coordinator_->tx_table_[tx_id_b].participant_cores.insert(0);
+  SendCommit(tx_id_b);
+
+  const size_t baseline = forwarded_tasks_.size();  // 2 PREPARE_REQUESTs already forwarded
+
+  HandlePrepareResponse(tx_id_a, true);
+  HandlePrepareResponse(tx_id_b, true);
+
+  EXPECT_EQ(forwarded_tasks_.size(), baseline);  // neither finalized yet
+
+  coordinator_->FlushPendingCommits();
+
+  ASSERT_EQ(forwarded_tasks_.size(), baseline + 2);
+  EXPECT_EQ(forwarded_tasks_[baseline].tx_id, tx_id_a);
+  EXPECT_EQ(forwarded_tasks_[baseline + 1].tx_id, tx_id_b);
+  EXPECT_EQ(forwarded_tasks_[baseline].type, TaskType::TX_FINALIZE_COMMIT_REQUEST);
+  EXPECT_EQ(forwarded_tasks_[baseline + 1].type, TaskType::TX_FINALIZE_COMMIT_REQUEST);
+}
+
+TEST_F(TxCoordinatorWalTest, FlushPendingCommits_NoOpWhenEmpty) {
+  const size_t baseline = forwarded_tasks_.size();
+  EXPECT_NO_THROW(coordinator_->FlushPendingCommits());
+  EXPECT_EQ(forwarded_tasks_.size(), baseline);
+}
+
+TEST_F(TxCoordinatorWalTest, FlushPendingCommits_EndToEnd_ResponseSucceeds) {
+  const uint64_t tx_id = DoBegin();
+  coordinator_->tx_table_[tx_id].participant_cores.insert(0);
+  const int baseline_responses = response_count_;  // Begin already responded once
+  const uint64_t commit_request_id = next_req_id_;
+  SendCommit(tx_id);
+
+  HandlePrepareResponse(tx_id, true);
+  coordinator_->FlushPendingCommits();
+
+  EXPECT_EQ(response_count_, baseline_responses);
+
+  Task finalize_ack;
+  finalize_ack.type = TaskType::TX_FINALIZE_COMMIT_RESPONSE;
+  finalize_ack.tx_id = tx_id;
+  coordinator_->HandleFinalizeResponse(std::move(finalize_ack));
+
+  EXPECT_EQ(response_count_, baseline_responses + 1);
+  EXPECT_EQ(last_response_request_id_, commit_request_id);
+  EXPECT_EQ(last_response_.type, TaskType::TX_COMMIT_RESPONSE);
+  EXPECT_TRUE(last_response_.success);
+}
+
 TEST_F(TxCoordinatorWalTest, LoadRecoveredState_PopulatesTxTable) {
   std::unordered_map<uint64_t, TxRecord> recovered;
   recovered[10] = TxRecord{
