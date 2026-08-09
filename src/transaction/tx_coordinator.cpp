@@ -242,17 +242,29 @@ void TxCoordinator::HandlePrepareResponse(
 
   if (!pending_prepare_it->second.any_no) {
     const uint64_t commit_ts = next_snapshot_ts_++;
+    pending_finalize.is_commit = true;
+
     if (wal_) {
       WalRecord rec;
       rec.type = WalRecordType::COMMIT_DECISION;
       rec.tx_id = task.tx_id;
       rec.commit_ts = commit_ts;
       wal_->Append(std::move(rec));
-      wal_->Sync();
+
+      // Group commit: запись уже в page cache, но ещё не durable — не
+      // запускаем finalize-fan-out (а значит и путь к ack клиенту) раньше,
+      // чем FlushPendingCommits() засинкает этот батч одним fdatasync().
+      tx_it->second.state = TxState::COMMITTED;
+      tx_it->second.commit_ts = commit_ts;
+      pending_group_commits_.push_back(
+          PendingGroupCommit{std::move(pending_finalize), commit_ts, participants});
+      pending_prepares_.erase(pending_prepare_it);
+      return;
     }
+
+    // Без WAL синкать нечего — прежнее поведение, немедленный fan-out.
     tx_it->second.state = TxState::COMMITTED;
     tx_it->second.commit_ts = commit_ts;
-    pending_finalize.is_commit = true;
     pending_finalizes_[task.tx_id] = pending_finalize;
 
     for (int core : participants) {
@@ -288,6 +300,33 @@ void TxCoordinator::HandlePrepareResponse(
   }
 
   pending_prepares_.erase(pending_prepare_it);
+}
+
+void TxCoordinator::FlushPendingCommits() {
+  if (pending_group_commits_.empty()) {
+    return;
+  }
+
+  // wal_ не может быть null здесь: в pending_group_commits_ попадают записи
+  // только из ветки HandlePrepareResponse, где wal_ уже проверен.
+  wal_->Sync();
+
+  for (auto& entry : pending_group_commits_) {
+    const uint64_t tx_id = entry.finalize.tx_id;
+    const uint64_t commit_ts = entry.commit_ts;
+    pending_finalizes_[tx_id] = std::move(entry.finalize);
+
+    for (int core : entry.participants) {
+      Task finalize_task;
+      finalize_task.type = TaskType::TX_FINALIZE_COMMIT_REQUEST;
+      finalize_task.tx_id = tx_id;
+      finalize_task.commit_ts = commit_ts;
+      finalize_task.reply_to_core = 0;
+      router_.SendToCore(core, std::move(finalize_task));
+    }
+  }
+
+  pending_group_commits_.clear();
 }
 
 void TxCoordinator::HandleHeartbeat(Task& task) {

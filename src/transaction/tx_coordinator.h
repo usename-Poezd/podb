@@ -5,6 +5,7 @@
 #include <functional>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include "core/backoff.h"
 #include "core/clock.h"
@@ -80,6 +81,12 @@ class TxCoordinator {
   /// Разрешить in-doubt транзакции после recovery.
   void ResolveInDoubt(int num_cores);
 
+  /// Group commit: один fdatasync() на все commit-решения, накопленные с
+  /// прошлого вызова, вместо одного fsync на транзакцию. Вызывается извне
+  /// периодическим таймером (см. src/main.cpp) — сама TxCoordinator не
+  /// знает о времени/io_context. Безопасный no-op, если нечего флашить.
+  void FlushPendingCommits();
+
  private:
   /// Ожидание завершения финализации на participant cores
   struct PendingFinalize {
@@ -100,6 +107,15 @@ class TxCoordinator {
     bool any_no{false};
     std::string first_error;
     Clock::TimePoint created_time{};  // for stuck-timeout detection
+  };
+
+  /// Коммит, чей WAL-record уже дописан (Append), но ещё не засинкан —
+  /// ждёт группового FlushPendingCommits(). finalize-fan-out для него
+  /// нельзя запускать раньше, чем отработает Sync() всего батча.
+  struct PendingGroupCommit {
+    PendingFinalize finalize;
+    uint64_t commit_ts{0};
+    std::unordered_set<int> participants;
   };
 
   void HandleBegin(Task& task);
@@ -125,6 +141,9 @@ class TxCoordinator {
   std::unordered_map<uint64_t, PendingPrepare> pending_prepares_;
 
   std::unordered_map<uint64_t, PendingFinalize> pending_finalizes_;
+
+  /// Commit-решения, ждущие группового fsync (см. PendingGroupCommit).
+  std::vector<PendingGroupCommit> pending_group_commits_;
 
   /// Счётчик tx_id. Начинается с 1 (tx_id=0 зарезервирован как sentinel).
   uint64_t next_tx_id_{1};

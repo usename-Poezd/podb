@@ -65,8 +65,10 @@ sequenceDiagram
 
     Note over TC,SE3: --- Decision ---
     TC->>TC: Все YES → commit_ts=1001
-    TC->>TC: WAL: COMMIT_DECISION + Sync()
-    TC->>TC: state → COMMITTED
+    TC->>TC: WAL: Append(COMMIT_DECISION) — без Sync()
+    TC->>TC: state → COMMITTED, staged в pending_group_commits_
+    Note over TC: ⏱ group commit: до 1мс ожидания,<br/>затем один Sync() на весь батч
+    TC->>TC: FlushPendingCommits(): Sync()
 
     Note over TC,SE3: --- Finalize ---
     par
@@ -121,8 +123,13 @@ TxCoordinator отправляет `TX_PREPARE_REQUEST` на каждый partic
 ### 4. Commit — Decision phase
 
 TxCoordinator собирает голоса:
-- **Все YES** → назначает `commit_ts`, пишет `COMMIT_DECISION` в WAL, `Sync()`;
-- **Хотя бы один NO** → пишет `ABORT_DECISION` в WAL.
+- **Все YES** → назначает `commit_ts`, пишет `COMMIT_DECISION` в WAL (`Append`, без немедленного `Sync()`),
+  откладывает finalize в `pending_group_commits_`. Реальный `Sync()` (один на все транзакции, накопленные с
+  прошлого раза) делает периодический `FlushPendingCommits()` — **group commit**, см.
+  [Transaction-TxCoordinator § Group commit](Transaction-TxCoordinator#group-commit--батчинг-fsync). Finalize
+  (шаг 5) не начинается раньше, чем этот `Sync()` отработает — клиент не может узнать об успешном commit раньше
+  реальной durability;
+- **Хотя бы один NO** → пишет `ABORT_DECISION` в WAL (без `Sync()` — не входит в group commit, см. ниже).
 
 ### 5. Commit — Finalize phase
 
@@ -180,8 +187,9 @@ Tx начата → клиент исчез → нет heartbeat → 30с timeou
 |------|-----------|-----------|-------|
 | Begin | TxCoordinator (Core 0) | TX_BEGIN | Нет |
 | Execute SET | KvExecutor (owner core) | INTENT | Нет |
-| Prepare YES | KvExecutor (owner core) | PREPARE | **Да** |
-| Decision | TxCoordinator (Core 0) | COMMIT/ABORT_DECISION | **Да** |
+| Prepare YES | KvExecutor (owner core) | PREPARE | **Да** (сразу, не батчится) |
+| Decision (commit) | TxCoordinator (Core 0) | COMMIT_DECISION | **Да, но батчится** — group commit, до 1мс, один `Sync()` на несколько транзакций сразу |
+| Decision (abort) | TxCoordinator (Core 0) | ABORT_DECISION | Нет |
 | Finalize | KvExecutor (owner core) | COMMIT/ABORT_FINALIZE | Нет |
 
 ## См. также

@@ -79,6 +79,14 @@ struct PendingFinalize {
     bool is_commit;               // commit или abort
     Clock::TimePoint created_time;
 };
+
+// Коммит, чей WAL-record уже дописан (Append), но ещё не засинкан —
+// ждёт группового FlushPendingCommits(). См. "Group commit" ниже.
+struct PendingGroupCommit {
+    PendingFinalize finalize;
+    uint64_t commit_ts;
+    std::unordered_set<int> participants;
+};
 ```
 
 ### 2PC message flow
@@ -107,8 +115,10 @@ sequenceDiagram
     P2-->>TC: TX_PREPARE_RESPONSE (YES)
 
     Note over TC: Все YES → COMMIT
-    TC->>TC: WAL: COMMIT_DECISION + Sync()
-    Note over TC: state → COMMITTED
+    TC->>TC: WAL: Append(COMMIT_DECISION) — без Sync()
+    Note over TC: state → COMMITTED<br/>staged в pending_group_commits_
+    Note over TC: ⏱ до 1мс — ждём group commit flush<br/>(см. раздел ниже)
+    TC->>TC: FlushPendingCommits(): Sync() — один на весь батч
 
     par Finalize phase
         TC->>P1: TX_FINALIZE_COMMIT_REQUEST
@@ -125,6 +135,57 @@ sequenceDiagram
 
     TC-->>C: CommitResponse(success=true)
 ```
+
+### Group commit — батчинг fsync
+
+**Проблема.** Нагрузочное тестирование (`bench/`) показало: TX throughput упирался в плоский потолок ~850-870 tx/s
+независимо от клиентской конкурентности (32→512 потоков), а `perf`-профилирование Core 0 под нагрузкой показало
+низкую загрузку CPU (~14%) при жёстком потолке throughput — признак блокировки на I/O, не на вычислениях. Причина:
+`HandlePrepareResponse` делал `wal_->Append(rec); wal_->Sync();` — один синхронный `fdatasync()` **на каждую
+транзакцию**, инлайново внутри однопоточного task-loop координатора. `1 / 870 tx/s ≈ 1.15мс` — это и была цена
+одного `fdatasync()` на диске.
+
+**Решение.** Вместо немедленного `Sync()` после `Append()`, коммит-решение складывается в
+`pending_group_commits_` (WAL-запись уже в page cache, но ещё не durable — finalize fan-out для неё не
+запускается). Периодический таймер на `workers[0]->GetIoContext()` (аналог `reaper_timer`, интервал 1мс,
+константа `kGroupCommitInterval` в `src/main.cpp`) вызывает `FlushPendingCommits()`, который делает **один**
+`Sync()` на все транзакции, накопившиеся с прошлого вызова, и только затем рассылает
+`TX_FINALIZE_COMMIT_REQUEST` для каждой из них.
+
+```mermaid
+flowchart LR
+    subgraph "До group commit"
+        A1["tx A: Append+Sync"] --> A2["tx A: finalize"]
+        B1["tx B: Append+Sync"] --> B2["tx B: finalize"]
+        A2 --> B1
+    end
+```
+```mermaid
+flowchart LR
+    subgraph "После group commit"
+        C1["tx A: Append"] --> S["один Sync()<br/>на весь батч"]
+        C2["tx B: Append"] --> S
+        S --> C3["tx A: finalize"]
+        S --> C4["tx B: finalize"]
+    end
+```
+
+**Инвариант durability.** Fan-out `TX_FINALIZE_COMMIT_REQUEST` (а значит и путь к client ack через
+`HandleFinalizeResponse` → `SendResponse`) идёт строго ПОСЛЕ `Sync()` этого батча — никогда до. Клиент не может
+узнать об успешном commit раньше, чем реально отработает синк, покрывающий его транзакцию: крэш до flush просто
+означает, что транзакция не подтверждена и корректно не восстановится как `COMMITTED` при recovery (см.
+[Recovery](Recovery)).
+
+**Fallback без WAL.** Если `wal_ == nullptr` (напр. часть unit-тестов), синкать нечего — используется старое
+поведение, немедленный fan-out сразу после `Append()`, без батчинга.
+
+**Измеренный эффект**: throughput +53…+72% (в среднем +64%) на всех точках `--threads 32…512`, и он снова растёт
+вместе с нагрузкой вместо плато; latency упала пропорционально (~1.55–1.70×) — согласуется с Little's Law при
+неизменной клиентской конкурентности. `commit-only` latency осталась ненулевой и растёт с нагрузкой — подтверждение,
+что `fsync` по-прежнему реально происходит, просто делится на несколько транзакций.
+
+Окно батчинга (1мс) — захардкоженная константа, не CLI-флаг; abort-путь (`ABORT_DECISION`) в батчинг не входит —
+он и раньше не вызывал `Sync()` синхронно, это отдельная, не тронутая часть.
 
 ### Reaper — очистка stale транзакций
 
@@ -206,6 +267,12 @@ public:
     void HandleFinalizeResponse(Task task);
     // Собирает ACK → ответ клиенту
 
+    void FlushPendingCommits();
+    // Group commit: один Sync() на все commit-решения, накопленные с
+    // прошлого вызова, вместо одного fsync на транзакцию. Вызывается
+    // извне периодическим таймером (main.cpp, интервал 1мс) — сама
+    // TxCoordinator не знает о времени/io_context. No-op, если нечего флашить.
+
     void ReapStaleTransactions();
     // Очистка stale транзакций (1с таймер)
 
@@ -224,9 +291,10 @@ public:
 | [Core-CoreDispatcher](Core-CoreDispatcher) | Вызывает `HandleControl`, `HandleExecute`, `HandlePrepareResponse`, `HandleFinalizeResponse` |
 | [Router](Router) | `RouteTask()` для TX_EXECUTE; `SendToCore()` для PREPARE/FINALIZE |
 | [Handlers-GrpcHandler](Handlers-GrpcHandler) | `resume_fn_` возвращает ответ через `ResumeCoroutine()` |
-| [WAL](WAL) | `Append()` для TX_BEGIN, COMMIT/ABORT_DECISION |
+| [WAL](WAL) | `Append()` для TX_BEGIN, COMMIT/ABORT_DECISION; `Sync()` батчится через `FlushPendingCommits()` |
 | [Core-Clock](Core-Clock) | `Now()` для timestamps и lease tracking |
 | [Recovery](Recovery) | `RecoverCoordinator()` → `LoadRecoveredState()` → `ResolveInDoubt()` |
+| `main.cpp` | Владеет `commit_flush_timer` (1мс, `boost::asio::steady_timer` на `workers[0]->GetIoContext()`, по образцу `reaper_timer`) — периодически вызывает `FlushPendingCommits()` |
 
 ## См. также
 

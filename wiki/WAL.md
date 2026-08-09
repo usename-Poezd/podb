@@ -110,6 +110,14 @@ sequenceDiagram
 - INTENT-записи группируются и sync'ятся вместе с PREPARE;
 - `fdatasync()` — синхронизирует данные, но не обязательно метаданные файла.
 
+**Group commit на уровне координатора.** Это описывает per-core WAL, которым управляет `KvExecutor` (PREPARE на
+participant core). У `TxCoordinator` — свой, отдельный Sync-путь на Core 0 для `COMMIT_DECISION`, и он **батчится**:
+вместо `Append()+Sync()` на каждую транзакцию координатор откладывает `Sync()` до периодического
+`FlushPendingCommits()` (интервал 1мс), который синкает разом все commit-решения, накопленные с прошлого раза.
+Причина — синхронный `fdatasync()` на каждый commit оказался throughput-потолком ~870 tx/s (замерено
+`bench/`-тестами); батчинг поднял его на ~64% без ослабления durability. Подробности — в
+[Transaction-TxCoordinator § Group commit](Transaction-TxCoordinator#group-commit--батчинг-fsync).
+
 ### Путь чтения и recovery
 
 ```mermaid
@@ -255,7 +263,7 @@ inline uint32_t Crc32cUnmask(uint32_t masked);              // Размаски�
 | Модуль | Взаимодействие |
 |--------|---------------|
 | [Execution-KvExecutor](Execution-KvExecutor) | Вызывает `Append()` для INTENT, PREPARE, COMMIT/ABORT_FINALIZE; `Sync()` при PREPARE |
-| [Transaction-TxCoordinator](Transaction-TxCoordinator) | Вызывает `Append()` для TX_BEGIN, COMMIT/ABORT_DECISION |
+| [Transaction-TxCoordinator](Transaction-TxCoordinator) | Вызывает `Append()` для TX_BEGIN, COMMIT/ABORT_DECISION; `Sync()` для COMMIT_DECISION батчится через `FlushPendingCommits()` (group commit), а не идёт на каждую транзакцию |
 | [Recovery](Recovery) | `WalReader::ReadAll()` для replay при recovery |
 | [Checkpoint](Checkpoint) | CHECKPOINT-запись фиксирует snapshot LSN |
 
